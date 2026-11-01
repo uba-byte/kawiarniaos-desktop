@@ -63,9 +63,11 @@ class KawiarniaOSApp:
         self.wysokosc_okna = 850
         self.klucz_kuchnia = "kuchnia"
         self.klucz_bar = "bar"
+        self.klucz_admin = "admin"
         self.pracownicy_kuchnia = ""
         self.pracownicy_bar = ""
         self.pracownicy_kelner = ""
+        self.pracownicy_admin = ""
         self.wiersze_na_dzien = 12
         self.adresy_email = ""
         # Aktywacja przez konto KOS (patrz _wymagaj_aktywacji_kos) - zastapila
@@ -954,9 +956,11 @@ class KawiarniaOSApp:
         self.haslo_dostepu = self.haslo_var.get()
         self.klucz_kuchnia = self.klucz_kuchnia_var.get()
         self.klucz_bar = self.klucz_bar_var.get()
+        self.klucz_admin = self.klucz_admin_var.get()
         self.pracownicy_kuchnia = self.pracownicy_kuchnia_var.get()
         self.pracownicy_bar = self.pracownicy_bar_var.get()
         self.pracownicy_kelner = self.pracownicy_kelner_var.get()
+        self.pracownicy_admin = self.pracownicy_admin_var.get()
         self.kolor_tla = self.kolor_tla_var.get()
         self.kolor_czcionki = self.kolor_czcionki_var.get()
         self.adresy_email = self.adresy_email_var.get()
@@ -1018,8 +1022,8 @@ class KawiarniaOSApp:
         # BIAŁA LISTA KLUCZY DO ZAPISU (zapobiega błędom ComboBox is not JSON)
         klucze_bazowe = [
             "szablon_plik", "format_nazwy_pliku", "nazwa_programu", "haslo_dostepu",
-            "szerokosc_okna", "wysokosc_okna", "klucz_kuchnia", "klucz_bar",
-            "pracownicy_kuchnia", "pracownicy_bar", "pracownicy_kelner",
+            "szerokosc_okna", "wysokosc_okna", "klucz_kuchnia", "klucz_bar", "klucz_admin",
+            "pracownicy_kuchnia", "pracownicy_bar", "pracownicy_kelner", "pracownicy_admin",
             "wiersze_na_dzien", "kolor_tla", "kolor_czcionki", "adresy_email",
             "format_nazwy_obecnosci", "wykluczeni_napiwki",
             "kos_login", "kos_refresh_token", "kos_company_id", "kos_company_nazwa", "kos_plan",
@@ -1134,15 +1138,28 @@ class KawiarniaOSApp:
             return any(n in nazwa for n in lista)
         return self.klucz_bar.lower() in nazwa
 
+    def jest_admin(self, nazwa_pracownika):
+        """Rola "Admin" - osoby ktore nie biora udzialu w podziale serwisu i
+        nie pojawiaja sie na liscie raportow zmianowych (Rozliczenie Dnia).
+        Patrz uzycie w podziel_serwis / oblicz_napiwki_gotowka /
+        uzupelnij_kelnerow_z_obecnosci / _lista_kelnerow_bez_kuchni."""
+        nazwa = (nazwa_pracownika or "").lower()
+        lista = self._lista_pracownikow_funkcja(self.pracownicy_admin)
+        if lista:
+            return any(n in nazwa for n in lista)
+        return self.klucz_admin.lower() in nazwa
+
     def _lista_kelnerow_bez_kuchni(self):
         """Lista pracownikow do wprowadzania utargow w 'Rozliczenie Dnia' -
         bez Kuchni, ktora tam nie ma czego wprowadzac (nie obsluguje gosci
-        przy kasie/stoliku). Kuchnia jest dodawana automatycznie tylko do
-        podzialu napiwkow w kalkulatorze gotowki, na podstawie Obecnosci."""
+        przy kasie/stoliku), i bez Admina, ktory nie bierze udzialu w
+        rozliczeniach zmianowych w ogole. Kuchnia jest dodawana automatycznie
+        tylko do podzialu napiwkow w kalkulatorze gotowki, na podstawie
+        Obecnosci; Admin nie jest dodawany nigdzie - nie dostaje serwisu."""
         wynik = []
         for wpis in (self.lista_kelnerow or []):
             _, nazwa = self._rozbij_nr_nazwe(wpis)
-            if not self.jest_kuchnia(nazwa):
+            if not self.jest_kuchnia(nazwa) and not self.jest_admin(nazwa):
                 wynik.append(wpis)
         return wynik
 
@@ -1154,12 +1171,15 @@ class KawiarniaOSApp:
         return any(n in nazwa for n in lista)
 
     def _rebuduj_tabele_funkcji_pracownikow(self):
-        """Buduje tabelkę przypisania ról (Kelner / Kuchnia / Bar) do każdego
-        pracownika z listy — zamiennik ręcznego wpisywania imion po przecinku.
-        Każda rola to osobny checkbox, więc jeden pracownik może mieć kilka
-        ról naraz (np. Kuchnia + Bar). Na bieżąco aktualizuje
-        self.pracownicy_kuchnia_var / _bar_var / _kelner_var, które
-        zapisz_ustawienia() odczytuje tak samo jak wcześniej pole tekstowe."""
+        """Buduje tabelkę przypisania ról (Kelner / Kuchnia / Bar / Admin) do
+        każdego pracownika z listy — zamiennik ręcznego wpisywania imion po
+        przecinku. Każda rola to osobny checkbox, więc jeden pracownik może
+        mieć kilka ról naraz (np. Kuchnia + Bar). Na bieżąco aktualizuje
+        self.pracownicy_kuchnia_var / _bar_var / _kelner_var / _admin_var,
+        które zapisz_ustawienia() odczytuje tak samo jak wcześniej pole
+        tekstowe. Admin nie dostaje serwisu i nie pojawia się na liście
+        raportów zmianowych (patrz jest_admin / podziel_serwis /
+        uzupelnij_kelnerow_z_obecnosci)."""
         if not hasattr(self, "ramka_tabela_funkcji") or not self.ramka_tabela_funkcji.winfo_exists():
             return
         for widget in self.ramka_tabela_funkcji.winfo_children():
@@ -1178,39 +1198,43 @@ class KawiarniaOSApp:
             self.pracownicy_kuchnia_var.set("")
             self.pracownicy_bar_var.set("")
             self.pracownicy_kelner_var.set("")
+            self.pracownicy_admin_var.set("")
             return
 
-        role = ("Kelner", "Kuchnia", "Bar")
+        role = ("Kelner", "Kuchnia", "Bar", "Admin")
         tk.Label(self.ramka_tabela_funkcji, text="Pracownik", font=(self.czcionka_nazwa, 10, "bold"),
                  bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=0, column=0, sticky="w", padx=(0, 16), pady=(0, 6))
         for col, rola in enumerate(role, start=1):
             tk.Label(self.ramka_tabela_funkcji, text=rola, font=(self.czcionka_nazwa, 10, "bold"),
                      bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=0, column=col, padx=(0, 14), pady=(0, 6))
 
-        # pracownik -> {"Kelner": BooleanVar, "Kuchnia": BooleanVar, "Bar": BooleanVar}
+        # pracownik -> {"Kelner": BooleanVar, "Kuchnia": BooleanVar, "Bar": BooleanVar, "Admin": BooleanVar}
         self.funkcja_pracownika_vars = {}
         kelner_jawnie = set(self._lista_pracownikow_funkcja(self.pracownicy_kelner))
 
         def przelicz(*_args):
-            kuchnia, bar, kelner = [], [], []
+            kuchnia, bar, kelner, admin = [], [], [], []
             for nazwa, vary in self.funkcja_pracownika_vars.items():
                 if vary["Kuchnia"].get(): kuchnia.append(nazwa)
                 if vary["Bar"].get(): bar.append(nazwa)
                 if vary["Kelner"].get(): kelner.append(nazwa)
+                if vary["Admin"].get(): admin.append(nazwa)
             self.pracownicy_kuchnia_var.set(", ".join(kuchnia))
             self.pracownicy_bar_var.set(", ".join(bar))
             self.pracownicy_kelner_var.set(", ".join(kelner))
+            self.pracownicy_admin_var.set(", ".join(admin))
 
         for idx, nazwa in enumerate(nazwiska, start=1):
             w_kuchni = self.jest_kuchnia(nazwa)
             w_barze = self.jest_bar(nazwa)
+            w_admin = self.jest_admin(nazwa)
             if kelner_jawnie or self.pracownicy_kelner.strip():
                 # Rola Kelner była już kiedyś zapisana tą tabelką - ufamy jej wprost.
                 w_kelner = nazwa.lower() in kelner_jawnie
             else:
                 # Pierwsze otwarcie po aktualizacji: zachowaj stare domyślne
-                # zachowanie ("nikt przypisany do Kuchni/Bar = Kelner").
-                w_kelner = not w_kuchni and not w_barze
+                # zachowanie ("nikt przypisany do Kuchni/Bar/Admina = Kelner").
+                w_kelner = not w_kuchni and not w_barze and not w_admin
 
             tk.Label(self.ramka_tabela_funkcji, text=nazwa, font=(self.czcionka_nazwa, 10),
                      bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=idx, column=0, sticky="w", padx=(0, 16), pady=2)
@@ -1219,6 +1243,7 @@ class KawiarniaOSApp:
                 "Kelner": tk.BooleanVar(value=w_kelner),
                 "Kuchnia": tk.BooleanVar(value=w_kuchni),
                 "Bar": tk.BooleanVar(value=w_barze),
+                "Admin": tk.BooleanVar(value=w_admin),
             }
             self.funkcja_pracownika_vars[nazwa] = vary
             for col, rola in enumerate(role, start=1):
@@ -1478,7 +1503,9 @@ class KawiarniaOSApp:
         self.pracownicy_kuchnia_var = tk.StringVar(value=self.pracownicy_kuchnia)
         self.pracownicy_bar_var = tk.StringVar(value=self.pracownicy_bar)
         self.pracownicy_kelner_var = tk.StringVar(value=self.pracownicy_kelner)
+        self.pracownicy_admin_var = tk.StringVar(value=self.pracownicy_admin)
         self.wykluczeni_napiwki_var = pole(k1, 3, "Wykluczeni z napiwków (po przecinku):", self.wykluczeni_napiwki, kolumna=2, szer=20)
+        self.klucz_admin_var = pole(k1, 4, "Słowo-klucz „Admin”:", self.klucz_admin, kolumna=2, szer=20)
 
         # ---- Konto KOS (aktywacja programu) ----
         k1k = karta(
@@ -2241,14 +2268,16 @@ class KawiarniaOSApp:
         cb.grid(row=idx, column=0, padx=8, pady=6, sticky="w")
         cb.bind('<KeyRelease>', lambda e, c=cb: self.autocomplete_pracownik(e, c))
 
-        # Sekcja (bar/kuchnia) nie jest juz wybierana recznie - wynika
+        # Sekcja (bar/kuchnia/admin) nie jest juz wybierana recznie - wynika
         # automatycznie z przypisania pracownika w KOS (Grafik pracy na
         # stronie, patrz self.sekcja_kos_map / odswiez_liste_pracownikow),
         # z zapasowym spadkiem na lokalna tabelke "Funkcje pracownikow" w
-        # Ustawieniach (jest_kuchnia/jest_bar), gdy kogos nie ma na liscie
-        # z KOS. Pole zostaje jako wyszarzony podglad, bo dalej w kodzie
-        # (zapis do KOS, podzial napiwkow) nadal korzysta z tej wartosci.
-        sekcja_cb = ttk.Combobox(self.frame_obecnosci, values=["bar", "kuchnia"], width=8, state="disabled")
+        # Ustawieniach (jest_kuchnia/jest_bar/jest_admin), gdy kogos nie ma na
+        # liscie z KOS. Pole zostaje jako wyszarzony podglad, bo dalej w
+        # kodzie (zapis do KOS, podzial napiwkow) nadal korzysta z tej
+        # wartosci. "admin" wyklucza dana osobe z podzialu serwisu/napiwkow i
+        # z listy raportow zmianowych (Rozliczenie Dnia).
+        sekcja_cb = ttk.Combobox(self.frame_obecnosci, values=["bar", "kuchnia", "admin"], width=8, state="disabled")
         sekcja_cb.set(domyslna_sekcja); sekcja_cb.grid(row=idx, column=1, padx=8, pady=6)
 
         def _auto_sekcja(event=None, c=cb, sc=sekcja_cb):
@@ -2257,11 +2286,13 @@ class KawiarniaOSApp:
             if not nazwa:
                 return
             nowa = getattr(self, "sekcja_kos_map", {}).get(nazwa.lower())
-            if nowa not in ("bar", "kuchnia"):
+            if nowa not in ("bar", "kuchnia", "admin"):
                 if self.jest_kuchnia(nazwa):
                     nowa = "kuchnia"
                 elif self.jest_bar(nazwa):
                     nowa = "bar"
+                elif self.jest_admin(nazwa):
+                    nowa = "admin"
                 else:
                     return  # nieznana rola - zostaw domyslna/wczytana wartosc
             sc.config(state="normal"); sc.set(nowa); sc.config(state="disabled")
@@ -2816,7 +2847,7 @@ class KawiarniaOSApp:
 
         wykluczeni = self.lista_wykluczonych_napiwki()
         godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
-                   if n.lower() not in wykluczeni]
+                   if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
         if not godziny:
             return messagebox.showerror("Kalkulator", "Brak wpisanych godzin w zakładce Obecności dla tego dnia.\nUzupełnij Obecności, żeby podzielić proporcjonalnie.")
 
@@ -2841,13 +2872,23 @@ class KawiarniaOSApp:
                     dopasowani.add(n.lower())
                     break
 
+        # "Kuchnia" i "Bar" w Rozliczeniu Dnia to zbiorcze wiersze stanowiska
+        # (kod kasowy), a nie konkretna osoba - w ciagu dnia na barze/w
+        # kuchni moglo pracowac kilka roznych osob z Obecnosci, wiec ich
+        # udzialy sumujemy do jednej kwoty na wspolny wiersz danego
+        # stanowiska (bar byl tu wczesniej liczony, ale nigdy nic nie
+        # zapisywano do jego wiersza - to byl blad).
         kuchnia_suma = round(sum(kwoty[n] for n, s, g in godziny if s == "kuchnia" and n.lower() not in dopasowani), 2)
         for w in wiersze_kuchnia:
             w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(kuchnia_suma))
 
+        bar_suma = round(sum(kwoty[n] for n, s, g in godziny if s == "bar" and n.lower() not in dopasowani), 2)
+        for w in wiersze_bar:
+            w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(bar_suma))
+
         self.weryfikuj_dane()
         podsumowanie = "\n".join(f"{n} ({s}): {g:.2f}h -> {kwoty[n]:.2f} zł" for n, s, g in sorted(godziny, key=lambda x: -x[2]))
-        niedopasowani = [n for n, s, g in godziny if s != "kuchnia" and n.lower() not in dopasowani]
+        niedopasowani = [n for n, s, g in godziny if s not in ("kuchnia", "bar") and n.lower() not in dopasowani]
         info_extra = f"\n\nNie znaleziono w tabeli kelnerów wiersza dla: {', '.join(niedopasowani)} (ich udział nie został nigdzie wpisany)" if niedopasowani else ""
         messagebox.showinfo("Kalkulator", f"Podzielono proporcjonalnie do godzin (suma {suma_godzin:.2f}h):\n\n{podsumowanie}{info_extra}")
 
@@ -2858,7 +2899,7 @@ class KawiarniaOSApp:
 
         wykluczeni = self.lista_wykluczonych_napiwki()
         godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
-                   if n.lower() not in wykluczeni]
+                   if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
 
         # Wspolna pula dla WSZYSTKICH (kuchnia + bar/kelnerzy razem) - dzielona
         # proporcjonalnie do godzin, bez osobnego "podzialu 25/75" dla kuchni.
@@ -2889,7 +2930,8 @@ class KawiarniaOSApp:
     def uzupelnij_kelnerow_z_obecnosci(self, rok, miesiac, dzien):
         """Dodaje w Rozliczeniu Dnia wiersze dla pracowników wpisanych w zakładce Obecności
         danego dnia (bar/kelnerzy), którzy jeszcze nie mają swojego wiersza. Kuchnia liczona
-        jest zbiorczo (wg godzin) i nie potrzebuje osobnego wiersza."""
+        jest zbiorczo (wg godzin) i nie potrzebuje osobnego wiersza. Admin nie bierze udziału
+        w rozliczeniach zmianowych w ogóle - nigdy nie dostaje tu własnego wiersza."""
         try:
             obecni = self.zbierz_godziny_obecnosci_dnia(rok, miesiac, dzien)
         except Exception:
@@ -2902,7 +2944,7 @@ class KawiarniaOSApp:
             return nazwa_czysta.lower()
         istniejace = {_nazwa_wiersza(w) for w in self.wiersze_danych}
         for nazwa, sekcja, godz in obecni:
-            if str(sekcja).strip().lower() == "kuchnia":
+            if str(sekcja).strip().lower() in ("kuchnia", "admin"):
                 continue
             if nazwa.strip().lower() in istniejace:
                 continue
