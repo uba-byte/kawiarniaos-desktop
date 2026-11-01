@@ -15,6 +15,8 @@ import base64
 import uuid
 import webbrowser
 import sys
+import subprocess
+import tempfile
 from datetime import datetime
 
 # --- Dawny, wlasny backend Freyonatora (Supabase) - uzywany TYLKO do
@@ -172,6 +174,7 @@ class KawiarniaOSApp:
             self.root.destroy()
             return
         self._sprawdz_aktualizacje()
+        self._sprawdz_i_zainstaluj_aktualizacje_windows()
         
         self.root.title(self.nazwa_programu)
         _ekran_szer = self.root.winfo_screenwidth()
@@ -868,6 +871,68 @@ class KawiarniaOSApp:
                 messagebox.showinfo("Nowa wersja KawiarniaOS", tresc)
         except Exception as e:
             self._log_siec(f"sprawdz_aktualizacje: {type(e).__name__}: {e}")
+
+    def _numer_buildu_lokalny(self):
+        """Numer builda TEJ zainstalowanej kopii (tylko spakowana wersja Windows,
+        patrz .github/workflows/build-windows-installer.yml - krok "Zapisz numer
+        builda" zapisuje build_info.txt dolaczany do .exe). Brak pliku (np.
+        uruchomienie z kodu zrodlowego) = brak automatycznej aktualizacji."""
+        try:
+            if getattr(sys, "frozen", False):
+                sciezka_pliku = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "build_info.txt")
+            else:
+                sciezka_pliku = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_info.txt")
+            with open(sciezka_pliku, "r", encoding="utf-8") as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+
+    def _sprawdz_i_zainstaluj_aktualizacje_windows(self):
+        """Na Windows (spakowana wersja .exe) sprawdza najnowszy release na
+        GitHub (uba-byte/kawiarniaos-desktop) i - za zgoda uzytkownika - sam
+        pobiera najnowszy instalator i go uruchamia, po czym zamyka ten program
+        (zeby instalator mogl nadpisac plik .exe). Dzieki temu pracownicy kawiarni
+        NIE musza sami szukac strony/pobierac pliku za kazdym razem - wystarczy
+        kliknac "Tak" w oknie. Nie blokuje pracy programu - cicho pomija przy
+        braku internetu, braku numeru builda (np. kopia z kodu zrodlowego) albo
+        na innym systemie niz Windows."""
+        if sys.platform != "win32" or not getattr(sys, "frozen", False):
+            return
+        numer_lokalny = self._numer_buildu_lokalny()
+        if numer_lokalny is None:
+            return
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/uba-byte/kawiarniaos-desktop/releases/latest",
+                headers={"Accept": "application/vnd.github+json"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
+                dane = json.loads(resp.read().decode("utf-8"))
+            tag = str(dane.get("tag_name") or "")
+            if not tag.startswith("build-"):
+                return
+            numer_zdalny = int(tag.split("build-", 1)[1])
+            if numer_zdalny <= numer_lokalny:
+                return
+            if not messagebox.askyesno(
+                "Aktualizacja KawiarniaOS",
+                f"Dostępna jest nowa wersja programu (build {numer_zdalny}, masz build {numer_lokalny}).\n\n"
+                "Pobrać i zainstalować teraz? Program się zamknie, a instalator otworzy się automatycznie - "
+                "wystarczy kliknąć „Dalej” kilka razy.",
+            ):
+                return
+            url_pobierania = "https://github.com/uba-byte/kawiarniaos-desktop/releases/latest/download/KawiarniaOS-Setup.exe"
+            tmp_sciezka = os.path.join(tempfile.gettempdir(), "KawiarniaOS-Setup.exe")
+            req2 = urllib.request.Request(url_pobierania, method="GET")
+            with urllib.request.urlopen(req2, timeout=90, context=self._kontekst_ssl()) as resp2:
+                with open(tmp_sciezka, "wb") as f:
+                    shutil.copyfileobj(resp2, f)
+            subprocess.Popen([tmp_sciezka], shell=False)
+            self.root.destroy()
+            sys.exit(0)
+        except Exception as e:
+            self._log_siec(f"aktualizacja_windows: {type(e).__name__}: {e}")
 
     def wczytaj_ustawienia(self):
         if os.path.exists(self.sciezka(self.plik_ustawien)):
