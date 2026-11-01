@@ -1,0 +1,68 @@
+name: Build Windows Installer (KawiarniaOS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/build-windows-installer.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Zainstaluj zaleznosci
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller openpyxl
+
+      - name: Zapisz numer builda (do auto-aktualizacji w aplikacji)
+        run: '"${{ github.run_number }}" | Out-File -FilePath build_info.txt -Encoding ascii -NoNewline'
+
+      - name: Zbuduj KawiarniaOS.exe (PyInstaller)
+        run: >
+          pyinstaller --noconfirm --windowed
+          --name KawiarniaOS
+          --icon kawiarnia_icon.ico
+          --version-file version_info.txt
+          --add-data "szablon.xlsx;."
+          --add-data "assets;assets"
+          --add-data "build_info.txt;."
+          --hidden-import openpyxl
+          kawiarniaOS_gui.py
+
+      - name: Zainstaluj Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Zbuduj instalator (Inno Setup)
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\KawiarniaOS.iss'
+
+      - name: Wgraj jako artifact (podglad przy kazdym buildzie)
+        uses: actions/upload-artifact@v4
+        with:
+          name: KawiarniaOS-Setup
+          path: desktop/installer/Output/KawiarniaOS-Setup.exe
+
+      - name: Opublikuj release "latest" (stabilny link do pobrania)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "KawiarniaOS - build ${{ github.run_number }}"
+          make_latest: true
+          files: desktop/installer/Output/KawiarniaOS-Setup.exe
