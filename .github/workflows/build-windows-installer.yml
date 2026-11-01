@@ -32,6 +32,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller openpyxl
 
+      - name: Zapisz numer builda (do auto-aktualizacji w aplikacji)
+        run: '"${{ github.run_number }}" | Out-File -FilePath build_info.txt -Encoding ascii -NoNewline'
+
       - name: Zbuduj KawiarniaOS.exe (PyInstaller)
         run: >
           pyinstaller --noconfirm --onefile --windowed
@@ -39,6 +42,7 @@ jobs:
           --icon kawiarnia_icon.ico
           --add-data "szablon.xlsx;."
           --add-data "assets;assets"
+          --add-data "build_info.txt;."
           --hidden-import openpyxl
           kawiarniaOS_gui.py
 
