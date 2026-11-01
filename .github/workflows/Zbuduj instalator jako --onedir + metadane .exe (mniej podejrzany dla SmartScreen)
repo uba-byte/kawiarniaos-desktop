@@ -37,9 +37,10 @@ jobs:
 
       - name: Zbuduj KawiarniaOS.exe (PyInstaller)
         run: >
-          pyinstaller --noconfirm --onefile --windowed
+          pyinstaller --noconfirm --windowed
           --name KawiarniaOS
           --icon kawiarnia_icon.ico
+          --version-file version_info.txt
           --add-data "szablon.xlsx;."
           --add-data "assets;assets"
           --add-data "build_info.txt;."
