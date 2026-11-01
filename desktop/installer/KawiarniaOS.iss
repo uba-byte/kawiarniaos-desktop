@@ -24,7 +24,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
 
 [Files]
-Source: "..\dist\KawiarniaOS.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\KawiarniaOS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
