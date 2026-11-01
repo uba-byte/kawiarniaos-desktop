@@ -1367,8 +1367,16 @@ class KawiarniaOSApp:
         if not sesja or not sesja.get("access_token"):
             return None
         self.kos_access_token = sesja["access_token"]
-        if sesja.get("refresh_token"):
-            self.kos_refresh_token = sesja["refresh_token"]
+        nowy_refresh = sesja.get("refresh_token")
+        if nowy_refresh and nowy_refresh != self.kos_refresh_token:
+            # Supabase rotuje refresh_token przy kazdym odswiezeniu sesji - stary
+            # token przestaje dzialac od razu po wydaniu nowego. Trzeba go zapisac
+            # na dysk NATYCHMIAST (nie tylko trzymac w pamieci), inaczej po
+            # zamknieciu programu w pliku ustawien zostaje juz "zuzyty" (stary)
+            # refresh_token, serwer go odrzuca przy nastepnym starcie i program
+            # za kazdym razem prosi o ponowne logowanie.
+            self.kos_refresh_token = nowy_refresh
+            self._zapisz_json_ustawien()
         return self.kos_access_token
 
     def buduj_zakladke_ustawienia(self):
@@ -2786,38 +2794,25 @@ class KawiarniaOSApp:
         wykluczeni = self.lista_wykluczonych_napiwki()
         godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
                    if n.lower() not in wykluczeni]
-        kuchnia = [(n, g) for n, s, g in godziny if s == "kuchnia"]
-        reszta = [(n, g) for n, s, g in godziny if s != "kuchnia"]
 
-        pula_kuchnia = pula * 0.25
-        pula_reszta = pula * 0.75
-        suma_godz_kuchnia = sum(g for _, g in kuchnia)
-        suma_godz_reszta = sum(g for _, g in reszta)
+        # Wspolna pula dla WSZYSTKICH (kuchnia + bar/kelnerzy razem) - dzielona
+        # proporcjonalnie do godzin, bez osobnego "podzialu 25/75" dla kuchni.
+        suma_godzin = sum(g for _, _, g in godziny)
 
-        linie = [f"PULA GOTÓWKI: {pula:.2f} zł  (Kuchnia 25% = {pula_kuchnia:.2f} zł, Reszta 75% = {pula_reszta:.2f} zł)", ""]
+        linie = [f"PULA GOTÓWKI: {pula:.2f} zł  (wspólna pula dla wszystkich, w tym kuchni)", ""]
 
-        linie.append(f"--- KUCHNIA ({suma_godz_kuchnia:.2f}h łącznie) ---")
-        if kuchnia and suma_godz_kuchnia > 0:
-            for n, g in sorted(kuchnia, key=lambda x: -x[1]):
-                linie.append(f"  {n}: {g:.2f}h -> {(pula_kuchnia * g / suma_godz_kuchnia):.2f} zł")
+        if godziny and suma_godzin > 0:
+            linie.append(f"--- WSZYSCY ({suma_godzin:.2f}h łącznie) ---")
+            for n, s, g in sorted(godziny, key=lambda x: -x[2]):
+                etykieta = " [kuchnia]" if s == "kuchnia" else ""
+                linie.append(f"  {n}{etykieta}: {g:.2f}h -> {(pula * g / suma_godzin):.2f} zł")
+            razem = pula
         else:
-            linie.append("  Brak godzin kuchni w Obecnościach dla tego dnia.")
+            linie.append("  Brak godzin w Obecnościach dla tego dnia — nie można podzielić proporcjonalnie.")
+            razem = 0.0
 
-        linie.append(f"--- RESZTA / BAR ({suma_godz_reszta:.2f}h łącznie) ---")
-        if reszta and suma_godz_reszta > 0:
-            for n, g in sorted(reszta, key=lambda x: -x[1]):
-                linie.append(f"  {n}: {g:.2f}h -> {(pula_reszta * g / suma_godz_reszta):.2f} zł")
-        else:
-            linie.append("  Brak godzin bar/reszta w Obecnościach dla tego dnia.")
-
-        wyplacono_kuchnia = pula_kuchnia if (kuchnia and suma_godz_kuchnia > 0) else 0.0
-        wyplacono_reszta = pula_reszta if (reszta and suma_godz_reszta > 0) else 0.0
-        razem = wyplacono_kuchnia + wyplacono_reszta
         linie.append("")
-        uwaga = ""
-        if abs(pula - razem) > 0.01:
-            uwaga = f"  (UWAGA: {pula - razem:.2f} zł z puli NIE zostało przypisane — brak godzin w jednej z grup)"
-        linie.append(f"RAZEM WYPŁACONE: {razem:.2f} zł{uwaga}")
+        linie.append(f"RAZEM WYPŁACONE: {razem:.2f} zł")
         linie.append("")
         linie.append("Wynik nie jest zapisywany do Excela ani nigdzie indziej — tylko podgląd.")
 
