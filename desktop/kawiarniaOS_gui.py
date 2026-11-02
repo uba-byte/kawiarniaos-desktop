@@ -1149,6 +1149,36 @@ class KawiarniaOSApp:
             return any(n in nazwa for n in lista)
         return self.klucz_admin.lower() in nazwa
 
+    def _wiersz_to_kuchnia(self, nazwa_pracownika):
+        """Rozpoznaje TEN KONKRETNY zbiorczy wiersz stanowiska "Kuchnia" w
+        Rozliczeniu Dnia (np. "1 - Kuchnia") - PO ROWNOSCI ze slowem-kluczem
+        (self.klucz_kuchnia), NIEZALEZNIE od listy konkretnych pracownikow
+        przypisanych do roli Kuchnia w Ustawieniach (tabelka "Funkcje
+        pracownikow"). To rozroznienie jest kluczowe: rola_kuchnia(nazwa)
+        odpowiada na "czy TA OSOBA ma przypisana role Kuchnia" (np. do
+        filtrowania listy w Rozliczeniu Dnia albo auto-sekcji w
+        Obecnosciach), a to tutaj odpowiada na "czy TO JEST ten jeden,
+        specjalny zbiorczy wiersz stanowiska" - to dwie rozne rzeczy. Gdy
+        jest_kuchnia/jest_bar byly uzywane tu zamiennie, po wypelnieniu
+        tabelki "Funkcje pracownikow" realnymi nazwiskami (np. Bar: "Anna
+        Kowalska") przestawaly rozpoznawac zbiorczy wiersz "Kuchnia"/"Bar"
+        (bo te funkcje zaczynaly sprawdzac TYLKO liste przypisanych osob, a
+        nie slowo-klucz) - przy wczytywaniu dnia tworzyly osobny, nowy
+        wiersz pracownika (np. "1 - Kuchnia") zamiast wpisac serwis do
+        stalego wiersza "Kuchnia", a kazdy pracownik z realnie przypisana
+        rola Bar/Kuchnia mial blokowane pole Serwis we WLASNYM wierszu,
+        tak jakby byl zbiorczym wierszem stanowiska. Rownosc (nie samo
+        "zawiera sie") - zeby pracownik o imieniu zawierajacym slowo-klucz
+        jako fragment (np. "Barbara", "Bartosz" przy kluczu "bar") nie byl
+        mylnie rozpoznany jako ten zbiorczy wiersz."""
+        _, nazwa = self._rozbij_nr_nazwe(nazwa_pracownika or "")
+        return nazwa.strip().lower() == self.klucz_kuchnia.strip().lower()
+
+    def _wiersz_to_bar(self, nazwa_pracownika):
+        """Patrz _wiersz_to_kuchnia - analogicznie dla zbiorczego wiersza "Bar"."""
+        _, nazwa = self._rozbij_nr_nazwe(nazwa_pracownika or "")
+        return nazwa.strip().lower() == self.klucz_bar.strip().lower()
+
     def _lista_kelnerow_bez_kuchni(self):
         """Lista pracownikow do wprowadzania utargow w 'Rozliczenie Dnia' -
         bez Kuchni, ktora tam nie ma czego wprowadzac (nie obsluguje gosci
@@ -2716,7 +2746,7 @@ class KawiarniaOSApp:
             nazwa = cb.get().lower()
             v, km, kk, prz, foo, r, spr = map(self.pobierz_float, [vip_e.get(), km_e.get(), kk_e.get(), prz_e.get(), foo_e.get(), razem_e.get(), sprawdz_e.get()])
             suma_kart_wpisy += (km + kk)
-            if not self.jest_kuchnia(nazwa):
+            if not self._wiersz_to_kuchnia(nazwa):
                 suma_razem += r; suma_vip += v
                 got = r - v - (km + kk + prz + foo)
                 calk_gotowka += got; calk_sprawdz += spr
@@ -2857,8 +2887,8 @@ class KawiarniaOSApp:
 
         kwoty = {n: round(suma * (g / suma_godzin), 2) for n, s, g in godziny}
 
-        wiersze_kuchnia = [w for w in self.wiersze_danych if self.jest_kuchnia(w[0].get())]
-        wiersze_bar = [w for w in self.wiersze_danych if self.jest_bar(w[0].get())]
+        wiersze_kuchnia = [w for w in self.wiersze_danych if self._wiersz_to_kuchnia(w[0].get())]
+        wiersze_bar = [w for w in self.wiersze_danych if self._wiersz_to_bar(w[0].get())]
         wiersze_kelnerzy = [w for w in self.wiersze_danych if w not in wiersze_kuchnia and w not in wiersze_bar]
 
         dopasowani = set()
@@ -3017,10 +3047,10 @@ class KawiarniaOSApp:
             imie = str(p.get("pracownik") or "").strip()
             if not imie:
                 continue
-            if self.jest_kuchnia(imie):
+            if self._wiersz_to_kuchnia(imie):
                 w_kuchnia[6].delete(0, tk.END); w_kuchnia[6].insert(0, f"{self.bezpieczny_float(p.get('serwis')):.2f}")
                 continue
-            if self.jest_bar(imie):
+            if self._wiersz_to_bar(imie):
                 for pole, klucz in ((1, 'vip'), (2, 'karta_mob'), (3, 'karta_kasa'), (4, 'przelewy'), (5, 'foodsi'), (7, 'razem'), (9, 'zdano')):
                     w_bar[pole].delete(0, tk.END); w_bar[pole].insert(0, f"{self.bezpieczny_float(p.get(klucz)):.2f}")
                 continue
@@ -3089,7 +3119,7 @@ class KawiarniaOSApp:
                 [w[1].get(), w[2].get(), w[3].get(), w[4].get(), w[5].get(), w[6].get(), w[7].get()],
             )
             zdano = self.pobierz_float(w[9].get())
-            if self.jest_kuchnia(n):
+            if self._wiersz_to_kuchnia(n):
                 # Tak jak w starym Excelu: pracownicy kuchni nie maja zadnych
                 # danych finansowych poza serwisem.
                 vip = km = kk = prz = foo = raz = got = zdano = 0.0
@@ -3403,10 +3433,10 @@ class KawiarniaOSApp:
 
     def obsluga_typu_pracownika(self, event, cb, pola, serwis_ent):
         wartosc = cb.get().lower()
-        if self.jest_kuchnia(wartosc):
+        if self._wiersz_to_kuchnia(wartosc):
             for p in pola: p.config(state="disabled")
             serwis_ent.config(state="normal")
-        elif self.jest_bar(wartosc):
+        elif self._wiersz_to_bar(wartosc):
             for p in pola: p.config(state="normal")
             serwis_ent.delete(0, tk.END); serwis_ent.insert(0, "0.0"); serwis_ent.config(state="disabled")
         else:
