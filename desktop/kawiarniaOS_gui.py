@@ -1181,16 +1181,26 @@ class KawiarniaOSApp:
 
     def _lista_kelnerow_bez_kuchni(self):
         """Lista pracownikow do wprowadzania utargow w 'Rozliczenie Dnia' -
-        bez Kuchni, ktora tam nie ma czego wprowadzac (nie obsluguje gosci
-        przy kasie/stoliku), i bez Admina, ktory nie bierze udzialu w
-        rozliczeniach zmianowych w ogole. Kuchnia jest dodawana automatycznie
-        tylko do podzialu napiwkow w kalkulatorze gotowki, na podstawie
-        Obecnosci; Admin nie jest dodawany nigdzie - nie dostaje serwisu."""
+        bez REALNYCH OSOB przypisanych do roli Kuchnia (ktore tam nie maja
+        czego wprowadzac - nie obsluguja gosci przy kasie/stoliku) i bez
+        Admina (ktory nie bierze udzialu w rozliczeniach zmianowych w
+        ogole). Zawiera natomiast zawsze same zbiorcze wpisy "Kuchnia" i
+        "Bar" (self.str_kuchnia / self.str_bar) - oba sa normalnie
+        dodawane automatycznie (patrz wyczysc_formularz), ale musza byc
+        tez na tej liscie, zeby mozna je bylo recznie dopisac z listy
+        rozwijanej (np. gdy ktos przypadkiem usunie sztywny wiersz
+        stanowiska i trzeba go przywrocic) - Kuchnia dostaje tu zbiorczy
+        serwis do dalszego recznego rozdzielenia miedzy osoby, Bar to
+        zbiorczy raport z kasy barowej, na ktorej pracuje kilka osob
+        naraz."""
         wynik = []
         for wpis in (self.lista_kelnerow or []):
             _, nazwa = self._rozbij_nr_nazwe(wpis)
             if not self.jest_kuchnia(nazwa) and not self.jest_admin(nazwa):
                 wynik.append(wpis)
+        for zbiorczy in (self.str_kuchnia, self.str_bar):
+            if zbiorczy and zbiorczy not in wynik:
+                wynik.append(zbiorczy)
         return wynik
 
     def jest_kelner(self, nazwa_pracownika):
