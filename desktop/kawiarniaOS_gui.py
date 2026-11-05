@@ -2661,20 +2661,30 @@ class KawiarniaOSApp:
         """Buduje plik Rozliczenia miesiaca w czytelnym, kolorowym formacie
         (ten sam jezyk wizualny co eksport Obecnosci: naglowek na ciemnym
         tle, naprzemienne wiersze, zamrozony naglowek) z danych zapisanych w
-        bazie KOS. Stary szablon.xlsx (eksport z Numbers, formuly CHOOSE(),
-        stala lista pracownikow wpisana w wierszach 419-448) jest martwy od
-        migracji na Faze 1 i nie jest tutaj odtwarzany jeden-do-jeden."""
+        bazie KOS. Kolejnosc i nazwy kolumn dopasowane do dawnego, recznego
+        szablon.xlsx (DATA / NR / Imie i Nazwisko / Gotowka / Karta Mob. /
+        Karta Kasa / Przelewy / Foodsi / Serwis / Razem), z dwiema kolumnami
+        nawiasem (VIP/Straty, Zdano) na koncu, ktorych stary szablon nie mial.
+        UWAGA: stary szablon mial dla kazdego kelnera KAZDEGO dnia osobny
+        podzial FISKAL/FAKTURY/RAZEM (3 rownolegle zestawy kolumn) - ten
+        podzial per-kelner nie istnieje w danych od migracji na Faze 1 (Fiskal
+        i Faktury sa dzis zapisywane raz na caly dzien, nie per kelner, patrz
+        zakladka "WERYFIKACJA DNIA"), wiec NIE jest tu odtwarzany - nie ma z
+        czego go realnie policzyc bez zmyslania liczb. Stale formuly CHOOSE()
+        i sztywna lista 30 pracownikow z wierszy 419-448 rowniez nie sa
+        odtwarzane - eksport dziala dla dowolnej liczby/listy pracownikow z
+        KOS, nie tylko dla gory 30 zapisanych na sztywno w starym pliku."""
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "ROZLICZENIA"
-        naglowki = ["Data", "Pracownik", "Nr", "VIP", "Karta mob.", "Karta kasa", "Przelewy", "Foodsi", "Serwis", "Razem", "Gotówka", "Zdano"]
+        naglowki = ["Data", "Nr", "Imię i Nazwisko", "Gotówka", "Karta Mob.", "Karta Kasa", "Przelewy", "Foodsi", "Serwis", "Razem", "VIP/Straty", "Zdano"]
         for i, n in enumerate(naglowki, start=1):
             ws.cell(row=1, column=i, value=n)
         for w in sorted(wiersze, key=lambda x: (x.get("data") or "", x.get("nr_pracownika") or 0)):
             ws.append([
-                w.get("data"), w.get("pracownik"), w.get("nr_pracownika"), w.get("vip"), w.get("karta_mob"),
+                w.get("data"), w.get("nr_pracownika"), w.get("pracownik"), w.get("gotowka"), w.get("karta_mob"),
                 w.get("karta_kasa"), w.get("przelewy"), w.get("foodsi"), w.get("serwis"), w.get("razem"),
-                w.get("gotowka"), w.get("zdano"),
+                w.get("vip"), w.get("zdano"),
             ])
         self._styl_tabela_eksportu(ws, len(naglowki))
 
