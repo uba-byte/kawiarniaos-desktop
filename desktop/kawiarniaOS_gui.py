@@ -3510,12 +3510,50 @@ def _pokaz_ekran_ladowania(root):
     splash.wait_window(splash)
 
 
+def _globalny_handler_bledow(root, app):
+    """Bezpiecznik na nieoczekiwane bledy w obsludze przyciskow/zdarzen Tk.
+    Domyslnie Tkinter w takiej sytuacji NIC nie wyswietla uzytkownikowi - po
+    cichu wypisuje traceback na stderr/stdout i konczy obsluge zdarzenia,
+    co z perspektywy uzytkownika wyglada jak klikniecie, ktore nic nie robi
+    (np. "Zapisz obecnosci" / "Podziel serwis" bez zadnego komunikatu). Ten
+    handler zamiast tego: dociaga okno na wierzch, pokazuje czerwone okno z
+    opisem bledu i dopisuje go do log_sieci.txt, zeby bylo wiadomo co
+    konkretnie poszlo nie tak."""
+    def obsluz(exc_type, exc_value, exc_tb):
+        import traceback as _tb
+        szczegoly = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            app._log_siec(f"BLAD (nieobsluzony w interfejsie): {exc_type.__name__}: {exc_value}\n{szczegoly}")
+        except Exception:
+            pass
+        try:
+            root.lift()
+            root.attributes("-topmost", True)
+            root.after(200, lambda: root.attributes("-topmost", False))
+            root.focus_force()
+        except Exception:
+            pass
+        try:
+            messagebox.showerror(
+                "Nieoczekiwany błąd - akcja NIE została wykonana",
+                "Coś poszło nie tak i ostatnia akcja (np. zapis/podział) najpewniej "
+                "NIE została wykonana.\n\n"
+                f"{exc_type.__name__}: {exc_value}\n\n"
+                "Szczegóły zapisano do log_sieci.txt. Spróbuj ponownie; jeśli się "
+                "powtarza, przekaż ten komunikat.",
+            )
+        except Exception:
+            pass
+    root.report_callback_exception = obsluz
+
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()
     _pokaz_ekran_ladowania(root)
     root.deiconify()
     app = KawiarniaOSApp(root)
+    _globalny_handler_bledow(root, app)
     try:
         root.mainloop()
     except tk.TclError:
