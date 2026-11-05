@@ -1698,6 +1698,7 @@ class KawiarniaOSApp:
         self.pill(frame_top, text=self.txt_wczytaj_btn, command=self.wczytaj_dzien, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=(24, 8), pady=6)
         self.pill(frame_top, text=self.txt_wyczysc_btn, command=self.wyczysc_formularz, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat").grid(row=0, column=7, padx=8, pady=6)
         self.pill(frame_top, text="Plik na kolejny miesiąc", command=self.wygeneruj_plik_kolejnego_miesiaca, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=8, padx=(8, 0), pady=6)
+        self.pill(frame_top, text="Eksportuj Rozliczenie (m-c)", command=self.eksportuj_rozliczenie_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=9, padx=(8, 0), pady=6)
 
         # 2. WERYFIKACJA
         _zw_bot, frame_bot = self.zrob_karte(self.tab_rozliczenie, self.txt_weryfikacja)
@@ -2293,7 +2294,8 @@ class KawiarniaOSApp:
         tk.Entry(wiersz_pods, textvariable=self.pods_miesiac_var, width=4, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=5, ipady=4, padx=(0, 16))
 
         self.pill(wiersz_pods, text="Pokaż", command=self.pokaz_podsumowanie_miesiaca_kos, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=(0, 6), ipady=4)
-        self.pill(wiersz_pods, text="Eksportuj pliki miesiąca", command=self.eksportuj_pliki_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
+        self.pill(wiersz_pods, text="Pokaż wszystkich", command=self.pokaz_wszystkie_obecnosci_miesiaca, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
+        self.pill(wiersz_pods, text="Eksportuj pliki miesiąca", command=self.eksportuj_pliki_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=8, padx=6, ipady=4)
 
         self.txt_podsumowanie_godzin = tk.Text(frame_pods, height=12, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, font=("Courier New", 10), wrap="none")
         self.txt_podsumowanie_godzin.pack(fill="both", expand=True)
@@ -2449,6 +2451,78 @@ class KawiarniaOSApp:
         self.txt_podsumowanie_godzin.insert("1.0", "\n".join(linie))
         self.txt_podsumowanie_godzin.config(state="disabled")
 
+    def pokaz_wszystkie_obecnosci_miesiaca(self):
+        """Podglad WSZYSTKICH pracownikow w wybranym miesiacu na zywo z bazy
+        KOS, dzien po dniu - w odroznieniu od pokaz_podsumowanie_miesiaca_kos
+        (ktore pokazuje tylko jednego, wybranego w polu "Pracownik" czlowieka).
+        Uzywa tego samego endpointu (bez filtrowania po pracowniku)."""
+        import calendar
+        try:
+            rok = int(self.pods_rok_var.get()); miesiac = int(self.pods_miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status, dane = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/obecnosci?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się wczytać podsumowania miesiąca z KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd wczytywania", tresc)
+
+        wszystkie = dane.get("pracownicy") if isinstance(dane, dict) else []
+        dni_tyg = ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Niedz"]
+        miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1] if 1 <= miesiac <= 12 else str(miesiac)
+
+        wg_dnia = {}
+        for w in (wszystkie or []):
+            data_str = w.get("data") or ""
+            wg_dnia.setdefault(data_str, []).append(w)
+
+        linie = [f"OBECNOŚCI — WSZYSCY — {miesiac_nazwa} {rok}", ""]
+        if not wg_dnia:
+            linie.append("Brak zapisanych obecności w tym miesiącu.")
+        else:
+            suma_wszystkich = 0.0
+            for data_str in sorted(wg_dnia.keys()):
+                try:
+                    rr, mm, dd = data_str.split("-")
+                    etykieta_dnia = f"{dd}.{mm} ({dni_tyg[calendar.weekday(int(rr), int(mm), int(dd))]})"
+                except Exception:
+                    etykieta_dnia = data_str
+                linie.append(etykieta_dnia + ":")
+                suma_dnia = 0.0
+                for w in sorted(wg_dnia[data_str], key=lambda x: (x.get("pracownik") or "")):
+                    godz_od = self.dziesietna_na_godz(w.get("godz_od")) or "--:--"
+                    godz_do = self.dziesietna_na_godz(w.get("godz_do")) or "--:--"
+                    godziny = w.get("godziny") or 0.0
+                    suma_dnia += godziny
+                    suma_wszystkich += godziny
+                    nazwa_pr = str(w.get("pracownik", ""))[:22]
+                    linie.append(f"    {nazwa_pr:<22} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})")
+                linie.append(f"    razem dnia: {suma_dnia:.2f}h")
+                linie.append("")
+            linie.append(f"RAZEM MIESIĄC (wszyscy): {suma_wszystkich:.2f}h")
+
+        self.txt_podsumowanie_godzin.config(state="normal")
+        self.txt_podsumowanie_godzin.delete("1.0", tk.END)
+        self.txt_podsumowanie_godzin.insert("1.0", "\n".join(linie))
+        self.txt_podsumowanie_godzin.config(state="disabled")
+
     def eksportuj_pliki_miesiaca_kos(self):
         """Eksportuje swiezy plik Obecnosci (w tym samym, kolorowym formacie
         co bazowy Obecnosci_<rok>.xlsx) oraz plik Rozliczenia miesiaca - oba
@@ -2503,6 +2577,45 @@ class KawiarniaOSApp:
             f"Zapisano w folderze:\n{folder}\n\n• {os.path.basename(plik_obc)}\n• {os.path.basename(plik_rozl)}",
         )
 
+    def eksportuj_rozliczenie_miesiaca_kos(self):
+        """Eksportuje TYLKO plik Rozliczenia miesiaca (bez Obecnosci) - skrot
+        dostepny bezposrednio w zakladce "Rozliczenie Dnia" (korzysta z roku
+        i miesiaca wpisanych tutaj, self.rok_var/self.miesiac_var), zeby nie
+        trzeba bylo w tym celu przechodzic do zakladki Obecnosci - patrz
+        eksportuj_pliki_miesiaca_kos, ktory eksportuje oba pliki naraz."""
+        try:
+            rok = int(self.rok_var.get()); miesiac = int(self.miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status_r, dane_r = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status_r != 200:
+            szczegol = (dane_r.get("error") if isinstance(dane_r, dict) else "") or ""
+            return messagebox.showerror("Błąd", f"Nie udało się wczytać Rozliczeń z KOS.\n\n{szczegol}")
+
+        folder = filedialog.askdirectory(title="Wybierz folder do zapisu eksportu")
+        if not folder:
+            return
+
+        try:
+            plik_rozl = self._eksportuj_rozliczenie_xlsx(folder, rok, miesiac, dane_r.get("pracownicy") or [], dane_r.get("weryfikacje") or [])
+        except Exception as e:
+            return messagebox.showerror("Błąd eksportu", str(e))
+
+        messagebox.showinfo("Eksport zakończony", f"Zapisano:\n{plik_rozl}")
+
     def _eksportuj_obecnosci_xlsx(self, folder, rok, miesiac, wiersze):
         """Buduje plik Obecnosci w tym samym stylu co utworz_plik_obecnosci /
         _style_obecnosci (caly szkielet roku, kolorowe sekcje bar/kuchnia,
@@ -2548,20 +2661,30 @@ class KawiarniaOSApp:
         """Buduje plik Rozliczenia miesiaca w czytelnym, kolorowym formacie
         (ten sam jezyk wizualny co eksport Obecnosci: naglowek na ciemnym
         tle, naprzemienne wiersze, zamrozony naglowek) z danych zapisanych w
-        bazie KOS. Stary szablon.xlsx (eksport z Numbers, formuly CHOOSE(),
-        stala lista pracownikow wpisana w wierszach 419-448) jest martwy od
-        migracji na Faze 1 i nie jest tutaj odtwarzany jeden-do-jeden."""
+        bazie KOS. Kolejnosc i nazwy kolumn dopasowane do dawnego, recznego
+        szablon.xlsx (DATA / NR / Imie i Nazwisko / Gotowka / Karta Mob. /
+        Karta Kasa / Przelewy / Foodsi / Serwis / Razem), z dwiema kolumnami
+        nawiasem (VIP/Straty, Zdano) na koncu, ktorych stary szablon nie mial.
+        UWAGA: stary szablon mial dla kazdego kelnera KAZDEGO dnia osobny
+        podzial FISKAL/FAKTURY/RAZEM (3 rownolegle zestawy kolumn) - ten
+        podzial per-kelner nie istnieje w danych od migracji na Faze 1 (Fiskal
+        i Faktury sa dzis zapisywane raz na caly dzien, nie per kelner, patrz
+        zakladka "WERYFIKACJA DNIA"), wiec NIE jest tu odtwarzany - nie ma z
+        czego go realnie policzyc bez zmyslania liczb. Stale formuly CHOOSE()
+        i sztywna lista 30 pracownikow z wierszy 419-448 rowniez nie sa
+        odtwarzane - eksport dziala dla dowolnej liczby/listy pracownikow z
+        KOS, nie tylko dla gory 30 zapisanych na sztywno w starym pliku."""
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "ROZLICZENIA"
-        naglowki = ["Data", "Pracownik", "Nr", "VIP", "Karta mob.", "Karta kasa", "Przelewy", "Foodsi", "Serwis", "Razem", "Gotówka", "Zdano"]
+        naglowki = ["Data", "Nr", "Imię i Nazwisko", "Gotówka", "Karta Mob.", "Karta Kasa", "Przelewy", "Foodsi", "Serwis", "Razem", "VIP/Straty", "Zdano"]
         for i, n in enumerate(naglowki, start=1):
             ws.cell(row=1, column=i, value=n)
         for w in sorted(wiersze, key=lambda x: (x.get("data") or "", x.get("nr_pracownika") or 0)):
             ws.append([
-                w.get("data"), w.get("pracownik"), w.get("nr_pracownika"), w.get("vip"), w.get("karta_mob"),
+                w.get("data"), w.get("nr_pracownika"), w.get("pracownik"), w.get("gotowka"), w.get("karta_mob"),
                 w.get("karta_kasa"), w.get("przelewy"), w.get("foodsi"), w.get("serwis"), w.get("razem"),
-                w.get("gotowka"), w.get("zdano"),
+                w.get("vip"), w.get("zdano"),
             ])
         self._styl_tabela_eksportu(ws, len(naglowki))
 
