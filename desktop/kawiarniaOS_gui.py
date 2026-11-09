@@ -2658,33 +2658,37 @@ class KawiarniaOSApp:
         return plik
 
     def _eksportuj_rozliczenie_xlsx(self, folder, rok, miesiac, wiersze, weryfikacje):
-        """Buduje plik Rozliczenia miesiaca w czytelnym, kolorowym formacie
-        (ten sam jezyk wizualny co eksport Obecnosci: naglowek na ciemnym
-        tle, naprzemienne wiersze, zamrozony naglowek) z danych zapisanych w
-        bazie KOS. Uklad kolumn dopasowany do dawnego, recznego szablon.xlsx:
-        po Data/Nr/Imie i Nazwisko nastepuja trzy rownolegle 6-kolumnowe
-        bloki FISKAL / FAKTURY / RAZEM (Gotowka, Karty kredytowe, Przelewy,
-        Foodsi, Serwis, Razem) - zweryfikowane na realnych danych z
-        pazdziernika 2026 (Rozlicz_Freya_PA_DZIERNIK.xlsx, arkusz
-        ROZLICZ_2025): blok FAKTURY jest w tych danych w praktyce zawsze
-        zerowy (624 niezerowe komorki FISKAL vs 8 niezerowych komorek
-        FAKTURY na caly rok), bo cala sprzedaz jest fiskalizowana - wiec
-        FAKTURY jest tu wypelniany zerami, a RAZEM = FISKAL, bez zmyslania
-        zadnych liczb (to jest realny stan, nie uproszczenie). Kolumny
-        "Karta Mob."/"Karta Kasa" (rozbicie nieobecne w starym szablonie,
-        ale dostepne w KOS od migracji) oraz VIP/Straty i Zdano sa dopisane
-        jako dodatkowe kolumny na koncu, zeby nie zgubic danych, ktorych
-        stary szablon nie mial. Stale formuly CHOOSE() i sztywna lista 30
-        pracownikow z wierszy 419-448 starego szablonu rowniez nie sa
-        odtwarzane - eksport dziala dla dowolnej liczby/listy pracownikow z
-        KOS, nie tylko dla gory 30 zapisanych na sztywno w starym pliku."""
+        """Buduje plik Rozliczenia miesiaca z kolorami i ukladem kolumn
+        dopasowanymi do dawnego, recznego szablon.xlsx (zweryfikowane na
+        realnych danych z pazdziernika 2026 i na zrzucie ekranu oryginalu od
+        Jakuba): po Data/Nr/Imie i Nazwisko/SERWIS (samodzielna kolumna)
+        nastepuja trzy rownolegle 6-kolumnowe bloki FISKAL / FAKTURY / RAZEM
+        (Gotowka, Karty kredytowe, Przelewy, Foodsi, Serwis, Razem), kolorowane
+        pastelowo blokami (patrz _styl_tabela_rozliczenia) - bladozielony dla
+        FISKAL/FAKTURY, bladoniebiesko-zielony dla RAZEM, bladoniebieski dla
+        kolumn wiodacych (Data/Nr/Imie/SERWIS), zgodnie z oryginalem. Kolumna
+        "SERWIS" przed blokiem FISKAL jest zawsze rowna wartosci Serwis w
+        bloku FISKAL tego wiersza (to zdublowane pole istnialo w oryginalnym
+        szablonie jako osobna kolumna wejsciowa). Blok FAKTURY jest w tych
+        danych w praktyce zawsze zerowy (624 niezerowe komorki FISKAL vs 8
+        niezerowych komorek FAKTURY na caly rok), bo cala sprzedaz jest
+        fiskalizowana - wiec FAKTURY jest tu wypelniany zerami, a RAZEM =
+        FISKAL, bez zmyslania zadnych liczb (to jest realny stan, nie
+        uproszczenie). Kolumny "Karta Mob."/"Karta Kasa" (rozbicie nieobecne
+        w starym szablonie, ale dostepne w KOS od migracji) oraz VIP/Straty i
+        Zdano sa dopisane jako dodatkowe kolumny na koncu, zeby nie zgubic
+        danych, ktorych stary szablon nie mial. Stale formuly CHOOSE() i
+        sztywna lista 30 pracownikow z wierszy 419-448 starego szablonu
+        rowniez nie sa odtwarzane - eksport dziala dla dowolnej liczby/listy
+        pracownikow z KOS, nie tylko dla gory 30 zapisanych na sztywno w
+        starym pliku."""
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "ROZLICZENIA"
 
         sub_naglowki = ["Gotówka", "Karty kredytowe", "Przelewy", "Foodsi", "Serwis", "Razem"]
         bloki = ["FISKAL", "FAKTURY", "RAZEM"]
-        stale_naglowki = ["Data", "Nr", "Imię i Nazwisko"]
+        stale_naglowki = ["Data", "Nr", "Imię i Nazwisko", "SERWIS"]
         dodatkowe_naglowki = ["Karta Mob.", "Karta Kasa", "VIP/Straty", "Zdano"]
 
         kol = 1
@@ -2717,7 +2721,7 @@ class KawiarniaOSApp:
             if razem_fiskal is None:
                 razem_fiskal = gotowka + karty_razem + przelewy + foodsi + serwis
             ws.append([
-                w.get("data"), w.get("nr_pracownika"), w.get("pracownik"),
+                w.get("data"), w.get("nr_pracownika"), w.get("pracownik"), serwis,
                 # FISKAL
                 gotowka, karty_razem, przelewy, foodsi, serwis, razem_fiskal,
                 # FAKTURY (nie wystepuje per-kelner w KOS - w praktyce zawsze 0, patrz docstring)
@@ -2727,7 +2731,7 @@ class KawiarniaOSApp:
                 # dodatkowe kolumny z KOS, ktorych stary szablon nie mial
                 karta_mob, karta_kasa, w.get("vip"), w.get("zdano"),
             ])
-        self._styl_tabela_eksportu(ws, liczba_kolumn, liczba_wierszy_naglowka=2)
+        self._styl_tabela_rozliczenia(ws, liczba_kolumn, liczba_wierszy_naglowka=2)
 
         ws2 = wb.create_sheet("WERYFIKACJA DNIA")
         naglowki2 = ["Data", "Fiskal", "Faktury", "Karta mob. (raport)", "Karta kasa (raport)", "Gotówka sprawdzona", "Rozlicza", "Komentarz"]
@@ -2745,6 +2749,56 @@ class KawiarniaOSApp:
         wb.save(plik)
         wb.close()
         return plik
+
+    def _styl_tabela_rozliczenia(self, ws, liczba_kolumn, liczba_wierszy_naglowka=2):
+        """Styl arkusza ROZLICZENIA dopasowany kolorystycznie do dawnego,
+        recznego szablon.xlsx (sprobkowane z realnego zrzutu ekranu od
+        Jakuba): pastelowe bloki kolorow zamiast ciemnego naglowka uzywanego
+        w _styl_tabela_eksportu (ktory zostaje bez zmian dla pozostalych
+        eksportow - Obecnosci, Weryfikacja Dnia). Kolumny 1-4 (Data/Nr/Imie i
+        Nazwisko/SERWIS) - bladoniebieski; blok FISKAL - bladozielony; blok
+        FAKTURY - oliwkowo-zielony; blok RAZEM - bladoniebiesko-zielony;
+        dodatkowe kolumny (Karta Mob./Karta Kasa/VIP/Zdano, ktorych stary
+        szablon nie mial) - neutralny jasnoszary. Kolor tla jest taki sam w
+        naglowku i w wierszach danych (tak jak w oryginale), zamiast
+        naprzemiennych "zebry"."""
+        kol_wiodace = "BFDDE7"
+        kol_fiskal = "ECF1E0"
+        kol_faktury = "DCE8C8"
+        kol_razem = "D7E3EC"
+        kol_dodatkowe = "F3F4F6"
+        tekst_kolor = "1F2937"
+
+        def kolor_dla_kolumny(c):
+            if 1 <= c <= 4:
+                return kol_wiodace
+            if 5 <= c <= 10:
+                return kol_fiskal
+            if 11 <= c <= 16:
+                return kol_faktury
+            if 17 <= c <= 22:
+                return kol_razem
+            return kol_dodatkowe
+
+        cienka = Side(style="thin", color="c7ccd1")
+        ramka = Border(left=cienka, right=cienka, top=cienka, bottom=cienka)
+        for r in range(1, liczba_wierszy_naglowka + 1):
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.font = Font(bold=True, color=tekst_kolor, size=10)
+                kom.fill = PatternFill("solid", fgColor=kolor_dla_kolumny(c))
+                kom.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                kom.border = ramka
+        for c in range(1, liczba_kolumn + 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 13
+        for r in range(liczba_wierszy_naglowka + 1, ws.max_row + 1):
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.font = Font(color=tekst_kolor, size=10)
+                kom.fill = PatternFill("solid", fgColor=kolor_dla_kolumny(c))
+                kom.border = ramka
+                kom.alignment = Alignment(horizontal="center" if c > 3 else "left", vertical="center")
+        ws.freeze_panes = ws.cell(row=liczba_wierszy_naglowka + 1, column=1).coordinate
 
     def _styl_tabela_eksportu(self, ws, liczba_kolumn, liczba_wierszy_naglowka=1):
         """Prosty, czytelny styl tabeli eksportu (pogrubiony ciemny naglowek,
