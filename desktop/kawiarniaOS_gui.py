@@ -2384,12 +2384,47 @@ class KawiarniaOSApp:
         except Exception as e:
             messagebox.showerror("Błąd", str(e))
 
+    def _pobierz_serwis_wg_dnia_kos(self, rok, miesiac, access_token):
+        """Pomocnicze dla pokaz_podsumowanie_miesiaca_kos /
+        pokaz_wszystkie_obecnosci_miesiaca: pobiera serwis zapisany w
+        Rozliczeniu Dnia (zakladka "Rozliczenie Dnia", zapisywana przez
+        zapisz_dzien - GET /api/freyonator/dzien-rozliczenia) dla calego
+        miesiaca i zwraca go jako slownik {(data, pracownik_male_litery):
+        serwis}, zeby mozna go bylo dopasowac do wierszy Obecnosci po
+        (data, pracownik) - oba endpointy zapisuja "pracownik" jako to samo,
+        czyste imie (bez numeru z przodu), patrz zapisz_dzien_obecnosci /
+        zapisz_dzien. W razie bledu (np. brak polaczenia, albo jeszcze nic
+        nie zapisano w Rozliczeniu Dnia tego miesiaca) zwraca pusty slownik
+        po cichu - widok godzin z Obecnosci ma dzialac tak samo jak wczesniej
+        nawet gdy Rozliczenie Dnia nie jest (jeszcze) zapisane."""
+        try:
+            status_r, dane_r = self._kos_http(
+                "GET", f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia?rok={rok}&miesiac={miesiac}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        except Exception:
+            return {}
+        if status_r != 200 or not isinstance(dane_r, dict):
+            return {}
+        wynik = {}
+        for p in (dane_r.get("pracownicy") or []):
+            nazwa = str(p.get("pracownik") or "").strip().lower()
+            data_str = str(p.get("data") or "").strip()
+            if not nazwa or not data_str:
+                continue
+            wynik[(data_str, nazwa)] = self.bezpieczny_float(p.get("serwis"))
+        return wynik
+
     def pokaz_podsumowanie_miesiaca_kos(self):
-        """Dzien-po-dniu podsumowanie godzin pracy wybranego pracownika w
-        wybranym miesiacu, czytane na zywo z bazy KOS (nie z lokalnego Excela
-        - patrz komentarz w wczytaj_dzien_obecnosci) - zakres calego miesiaca
-        zwraca endpoint GET /api/freyonator/obecnosci?rok=..&miesiac=.. (bez
-        dzien)."""
+        """Dzien-po-dniu podsumowanie godzin pracy (i serwisu z Rozliczenia
+        Dnia, jesli zostal tam zapisany - patrz _pobierz_serwis_wg_dnia_kos)
+        wybranego pracownika w wybranym miesiacu, czytane na zywo z bazy KOS
+        (nie z lokalnego Excela - patrz komentarz w wczytaj_dzien_obecnosci)
+        - zakres calego miesiaca zwraca endpoint
+        GET /api/freyonator/obecnosci?rok=..&miesiac=.. (bez dzien). Gdy dla
+        danego dnia nikt jeszcze nie zapisal Rozliczenia (wiec serwis nie
+        jest znany), pokazuje sie "—" zamiast kwoty - nigdy 0 zl, zeby nie
+        sugerowac falszywie, ze serwis tego dnia wyniosl zero."""
         import calendar
         pracownik = (self.pods_pracownik_var.get() or "").strip()
         if not pracownik:
@@ -2421,6 +2456,8 @@ class KawiarniaOSApp:
                 tresc += f"\n\n{szczegol}"
             return messagebox.showerror("Błąd wczytywania", tresc)
 
+        serwis_wg_dnia = self._pobierz_serwis_wg_dnia_kos(rok, miesiac, access_token)
+
         wszystkie = dane.get("pracownicy") if isinstance(dane, dict) else []
         wiersze = [w for w in (wszystkie or []) if str(w.get("pracownik", "")).strip().lower() == pracownik.lower()]
 
@@ -2431,6 +2468,7 @@ class KawiarniaOSApp:
             linie.append("Brak zapisanych godzin w tym miesiącu dla tego pracownika.")
         else:
             suma = 0.0
+            suma_serwis = 0.0
             for w in sorted(wiersze, key=lambda x: x.get("data") or ""):
                 data_str = w.get("data") or ""
                 try:
@@ -2442,9 +2480,15 @@ class KawiarniaOSApp:
                 godz_do = self.dziesietna_na_godz(w.get("godz_do")) or "--:--"
                 godziny = w.get("godziny") or 0.0
                 suma += godziny
-                linie.append(f"  {etykieta_dnia:<14} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})")
+                serwis = serwis_wg_dnia.get((data_str, pracownik.lower()))
+                if serwis is not None:
+                    suma_serwis += serwis
+                    serwis_txt = f"{serwis:.2f} zł"
+                else:
+                    serwis_txt = "—"
+                linie.append(f"  {etykieta_dnia:<14} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})   Serwis: {serwis_txt}")
             linie.append("")
-            linie.append(f"RAZEM: {suma:.2f}h")
+            linie.append(f"RAZEM: {suma:.2f}h   •   SUMA SERWIS: {suma_serwis:.2f} zł")
 
         self.txt_podsumowanie_godzin.config(state="normal")
         self.txt_podsumowanie_godzin.delete("1.0", tk.END)
@@ -2455,7 +2499,8 @@ class KawiarniaOSApp:
         """Podglad WSZYSTKICH pracownikow w wybranym miesiacu na zywo z bazy
         KOS, dzien po dniu - w odroznieniu od pokaz_podsumowanie_miesiaca_kos
         (ktore pokazuje tylko jednego, wybranego w polu "Pracownik" czlowieka).
-        Uzywa tego samego endpointu (bez filtrowania po pracowniku)."""
+        Uzywa tego samego endpointu (bez filtrowania po pracowniku), plus
+        serwisu z Rozliczenia Dnia (patrz _pobierz_serwis_wg_dnia_kos)."""
         import calendar
         try:
             rok = int(self.pods_rok_var.get()); miesiac = int(self.pods_miesiac_var.get())
@@ -2484,6 +2529,8 @@ class KawiarniaOSApp:
                 tresc += f"\n\n{szczegol}"
             return messagebox.showerror("Błąd wczytywania", tresc)
 
+        serwis_wg_dnia = self._pobierz_serwis_wg_dnia_kos(rok, miesiac, access_token)
+
         wszystkie = dane.get("pracownicy") if isinstance(dane, dict) else []
         dni_tyg = ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Niedz"]
         miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1] if 1 <= miesiac <= 12 else str(miesiac)
@@ -2498,6 +2545,7 @@ class KawiarniaOSApp:
             linie.append("Brak zapisanych obecności w tym miesiącu.")
         else:
             suma_wszystkich = 0.0
+            suma_serwis_wszystkich = 0.0
             for data_str in sorted(wg_dnia.keys()):
                 try:
                     rr, mm, dd = data_str.split("-")
@@ -2506,6 +2554,7 @@ class KawiarniaOSApp:
                     etykieta_dnia = data_str
                 linie.append(etykieta_dnia + ":")
                 suma_dnia = 0.0
+                suma_serwis_dnia = 0.0
                 for w in sorted(wg_dnia[data_str], key=lambda x: (x.get("pracownik") or "")):
                     godz_od = self.dziesietna_na_godz(w.get("godz_od")) or "--:--"
                     godz_do = self.dziesietna_na_godz(w.get("godz_do")) or "--:--"
@@ -2513,10 +2562,17 @@ class KawiarniaOSApp:
                     suma_dnia += godziny
                     suma_wszystkich += godziny
                     nazwa_pr = str(w.get("pracownik", ""))[:22]
-                    linie.append(f"    {nazwa_pr:<22} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})")
-                linie.append(f"    razem dnia: {suma_dnia:.2f}h")
+                    serwis = serwis_wg_dnia.get((data_str, str(w.get("pracownik", "")).strip().lower()))
+                    if serwis is not None:
+                        suma_serwis_dnia += serwis
+                        suma_serwis_wszystkich += serwis
+                        serwis_txt = f"{serwis:.2f} zł"
+                    else:
+                        serwis_txt = "—"
+                    linie.append(f"    {nazwa_pr:<22} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})   Serwis: {serwis_txt}")
+                linie.append(f"    razem dnia: {suma_dnia:.2f}h   •   serwis dnia: {suma_serwis_dnia:.2f} zł")
                 linie.append("")
-            linie.append(f"RAZEM MIESIĄC (wszyscy): {suma_wszystkich:.2f}h")
+            linie.append(f"RAZEM MIESIĄC (wszyscy): {suma_wszystkich:.2f}h   •   SUMA SERWIS (wszyscy): {suma_serwis_wszystkich:.2f} zł")
 
         self.txt_podsumowanie_godzin.config(state="normal")
         self.txt_podsumowanie_godzin.delete("1.0", tk.END)
