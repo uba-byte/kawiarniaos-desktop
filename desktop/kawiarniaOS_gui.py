@@ -3019,20 +3019,29 @@ class KawiarniaOSApp:
         # bez podzialu 25/75 i bez wykluczenia baru, mimo ze etykieta w UI
         # od dawna obiecywala inaczej): Kuchnia dostaje ZAWSZE plaskie 25%
         # calej puli, niezaleznie od tego, ile osob/godzin tam bylo wpisane
-        # w Obecnosciach tego dnia. Bar jest CALKOWICIE wykluczony z podzialu
-        # serwisu (dostaje 0 zl). Pozostale 75% puli jest dzielone
-        # proporcjonalnie do godzin TYLKO miedzy kelnerow (czyli osoby,
-        # ktorych sekcja w Obecnosciach to NIE "kuchnia" i NIE "bar") - ktos
-        # moze byc tego dnia obecny w Obecnosciach (np. jako kuchnia albo
-        # bar), ale nie dostac stad serwisu, bo te dwie sekcje maja wlasna,
-        # osobna zasade (plaskie 25% / zero), nie proporcje godzinowa.
+        # w Obecnosciach tego dnia. "Bar" jest wykluczony z podzialu TYLKO
+        # jako zbiorczy wiersz/kasa "Bar" w Rozliczeniu Dnia (dostaje 0 zl -
+        # patrz wiersze_bar nizej) - to NIE to samo, co sekcja "bar" w
+        # Obecnosciach. W calym systemie (desktop + strona KOS, Grafik
+        # pracy) sekcja pracownika w Obecnosciach ma tylko dwie realne
+        # wartosci, "kuchnia" albo "bar" - nie istnieje osobna wartosc
+        # "kelner" (patrz _auto_sekcja / odswiez_liste_pracownikow). Sekcja
+        # "bar" jest wiec domyslna etykieta dla WSZYSTKICH kelnerow, nie
+        # oznacza osoby pracujacej na kasie barowej do wykluczenia z
+        # napiwkow - wczesniejsza wersja mylnie wykluczala przez to z 75%
+        # puli kompletnie wszystkich kelnerow (bo kazdy z nich ma sekcje
+        # "bar"), co dawalo blad "suma godzin kelnerow... wynosi 0" dla
+        # praktycznie kazdego dnia. Pozostale 75% puli jest dzielone
+        # proporcjonalnie do godzin miedzy wszystkich, ktorych sekcja w
+        # Obecnosciach to NIE "kuchnia" (czyli kelnerow, niezaleznie od
+        # tego, ze ich sekcja jest zapisana jako "bar").
         kuchnia_suma = round(suma * 0.25, 2)
         pula_kelnerzy = round(suma - kuchnia_suma, 2)
 
-        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() not in ("kuchnia", "bar")]
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() != "kuchnia"]
         suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
         if suma_godzin <= 0:
-            return messagebox.showerror("Kalkulator", "Suma godzin kelnerów (bez kuchni i baru) wynosi 0 — nie można podzielić proporcjonalnie 75% puli.")
+            return messagebox.showerror("Kalkulator", "Suma godzin kelnerów (bez kuchni) wynosi 0 — nie można podzielić proporcjonalnie 75% puli.")
 
         kwoty = {n: round(pula_kelnerzy * (g / suma_godzin), 2) for n, s, g in godziny_kelnerzy}
 
@@ -3082,14 +3091,18 @@ class KawiarniaOSApp:
         godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
                    if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
 
-        # Ta sama zasada co w zakladce "Rozliczenie Dnia" (podziel_serwis):
-        # Kuchnia dostaje zawsze plaskie 25% calej puli (niezaleznie od
-        # godzin), Bar jest calkowicie wykluczony z podzialu (0 zl), a
-        # pozostale 75% jest dzielone proporcjonalnie do godzin TYLKO miedzy
-        # kelnerow (sekcja inna niz "kuchnia"/"bar"/"admin").
+        # Ta sama zasada co w zakladce "Rozliczenie Dnia" (podziel_serwis -
+        # patrz komentarz tam o sekcji "bar" bedacej domyslna etykieta
+        # wszystkich kelnerow, nie oznaczajaca wykluczenia): Kuchnia dostaje
+        # zawsze plaskie 25% calej puli (niezaleznie od godzin), zbiorczy
+        # wiersz/kasa "Bar" w Rozliczeniu Dnia jest calkowicie wykluczony z
+        # podzialu (0 zl), a pozostale 75% jest dzielone proporcjonalnie do
+        # godzin miedzy wszystkich kelnerow w Obecnosciach (sekcja inna niz
+        # "kuchnia"/"admin" - sekcja "bar" to domyslna etykieta kelnerow, nie
+        # wyklucza ich stad).
         kuchnia_suma = round(pula * 0.25, 2)
         pula_kelnerzy = round(pula - kuchnia_suma, 2)
-        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() not in ("kuchnia", "bar")]
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() != "kuchnia"]
         suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
 
         linie = [
