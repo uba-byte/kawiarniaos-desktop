@@ -1745,7 +1745,7 @@ class KawiarniaOSApp:
         self.calc_2_var = tk.StringVar(value="0.0"); ec2 = tk.Entry(fc, textvariable=self.calc_2_var, width=7, **_calc_kw); tk.Label(fc, text="Raport 2:", font=(self.czcionka_nazwa, 10), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=2, pady=6); ec2.grid(row=0, column=3, padx=(6, 5), pady=6); self.przypnij_czyszczenie_zer(ec2)
         self.calc_3_var = tk.StringVar(value="0.0"); ec3 = tk.Entry(fc, textvariable=self.calc_3_var, width=7, **_calc_kw); tk.Label(fc, text="Raport 3:", font=(self.czcionka_nazwa, 10), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=4, pady=6); ec3.grid(row=0, column=5, padx=(6, 5), pady=6); self.przypnij_czyszczenie_zer(ec3)
         self.pill(fc, text=self.txt_podziel_btn, command=self.podziel_serwis, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=15, pady=6)
-        tk.Label(fc, text="(proporcjonalnie do godzin z zakładki Obecności, kuchnia zbiorczo + kelnerzy, bar bez zmian)", font=(self.czcionka_nazwa, 8, "italic"), bg=self.karta_bg, fg=self.tekst_muted).grid(row=1, column=0, columnspan=7, sticky="w", pady=(2,4))
+        tk.Label(fc, text="(Kuchnia zawsze 25% płasko, Bar wykluczony (0 zł), reszta 75% proporcjonalnie do godzin tylko dla kelnerów)", font=(self.czcionka_nazwa, 8, "italic"), bg=self.karta_bg, fg=self.tekst_muted).grid(row=1, column=0, columnspan=7, sticky="w", pady=(2,4))
 
         # 4. KELNERZY
         self._zw_mid, self.frame_mid = self.zrob_karte(self.tab_rozliczenie, self.txt_wprowadzanie)
@@ -1787,7 +1787,7 @@ class KawiarniaOSApp:
         self.gotowka_pula_var = tk.StringVar(value="0.0")
         egp = tk.Entry(fg, textvariable=self.gotowka_pula_var, width=10, bg="white", fg="black", insertbackground="black"); egp.grid(row=0, column=1, padx=5); self.przypnij_czyszczenie_zer(egp)
         self.pill(fg, text=self.txt_oblicz_gotowka_btn, command=self.oblicz_napiwki_gotowka, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=2, padx=15)
-        tk.Label(fg, text="Kuchnia zawsze dostaje 25% (wg godzin), reszta 75% (wg godzin) — wynik tylko na ekranie", font=(self.czcionka_nazwa, 8, "italic"), bg=self.kolor_tla, fg="#8B96AD").grid(row=0, column=3, padx=10, sticky="w")
+        tk.Label(fg, text="Kuchnia zawsze 25% płasko, Bar wykluczony (0 zł), reszta 75% wg godzin dla kelnerów — wynik tylko na ekranie", font=(self.czcionka_nazwa, 8, "italic"), bg=self.kolor_tla, fg="#8B96AD").grid(row=0, column=3, padx=10, sticky="w")
 
         self.txt_wynik_gotowka = tk.Text(fg, width=66, height=3, wrap="word", state="disabled",
                                           bg=self.kolor_tla, fg=self.tekst_muted, relief="flat", bd=0,
@@ -3014,11 +3014,27 @@ class KawiarniaOSApp:
         if not godziny:
             return messagebox.showerror("Kalkulator", "Brak wpisanych godzin w zakładce Obecności dla tego dnia.\nUzupełnij Obecności, żeby podzielić proporcjonalnie.")
 
-        suma_godzin = sum(g for _, _, g in godziny)
-        if suma_godzin <= 0:
-            return messagebox.showerror("Kalkulator", "Suma godzin wynosi 0 — nie można podzielić proporcjonalnie.")
+        # Zasada ustalona z Jakubem (problem: poprzednio wszyscy - kuchnia,
+        # bar i kelnerzy - byli wrzucani do jednej wspolnej puli godzinowej,
+        # bez podzialu 25/75 i bez wykluczenia baru, mimo ze etykieta w UI
+        # od dawna obiecywala inaczej): Kuchnia dostaje ZAWSZE plaskie 25%
+        # calej puli, niezaleznie od tego, ile osob/godzin tam bylo wpisane
+        # w Obecnosciach tego dnia. Bar jest CALKOWICIE wykluczony z podzialu
+        # serwisu (dostaje 0 zl). Pozostale 75% puli jest dzielone
+        # proporcjonalnie do godzin TYLKO miedzy kelnerow (czyli osoby,
+        # ktorych sekcja w Obecnosciach to NIE "kuchnia" i NIE "bar") - ktos
+        # moze byc tego dnia obecny w Obecnosciach (np. jako kuchnia albo
+        # bar), ale nie dostac stad serwisu, bo te dwie sekcje maja wlasna,
+        # osobna zasade (plaskie 25% / zero), nie proporcje godzinowa.
+        kuchnia_suma = round(suma * 0.25, 2)
+        pula_kelnerzy = round(suma - kuchnia_suma, 2)
 
-        kwoty = {n: round(suma * (g / suma_godzin), 2) for n, s, g in godziny}
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() not in ("kuchnia", "bar")]
+        suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
+        if suma_godzin <= 0:
+            return messagebox.showerror("Kalkulator", "Suma godzin kelnerów (bez kuchni i baru) wynosi 0 — nie można podzielić proporcjonalnie 75% puli.")
+
+        kwoty = {n: round(pula_kelnerzy * (g / suma_godzin), 2) for n, s, g in godziny_kelnerzy}
 
         wiersze_kuchnia = [w for w in self.wiersze_danych if self._wiersz_to_kuchnia(w[0].get())]
         wiersze_bar = [w for w in self.wiersze_danych if self._wiersz_to_bar(w[0].get())]
@@ -3029,31 +3045,33 @@ class KawiarniaOSApp:
             nazwa_wiersza = w[0].get()
             _, _nazwa_czysta_surowa = self._rozbij_nr_nazwe(nazwa_wiersza)
             surowa = _nazwa_czysta_surowa.lower()
-            for n, s, g in godziny:
+            for n, s, g in godziny_kelnerzy:
                 if n.lower() == surowa:
                     w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(kwoty[n]))
                     dopasowani.add(n.lower())
                     break
 
         # "Kuchnia" i "Bar" w Rozliczeniu Dnia to zbiorcze wiersze stanowiska
-        # (kod kasowy), a nie konkretna osoba - w ciagu dnia na barze/w
-        # kuchni moglo pracowac kilka roznych osob z Obecnosci, wiec ich
-        # udzialy sumujemy do jednej kwoty na wspolny wiersz danego
-        # stanowiska (bar byl tu wczesniej liczony, ale nigdy nic nie
-        # zapisywano do jego wiersza - to byl blad).
-        kuchnia_suma = round(sum(kwoty[n] for n, s, g in godziny if s == "kuchnia" and n.lower() not in dopasowani), 2)
+        # (kod kasowy), a nie konkretna osoba. Kuchnia dostaje swoja plaska
+        # kwote 25% niezaleznie od godzin, Bar dostaje 0 zl (wykluczony z
+        # podzialu serwisu w ogole).
         for w in wiersze_kuchnia:
             w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(kuchnia_suma))
 
-        bar_suma = round(sum(kwoty[n] for n, s, g in godziny if s == "bar" and n.lower() not in dopasowani), 2)
         for w in wiersze_bar:
-            w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(bar_suma))
+            w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, "0.0")
 
         self.weryfikuj_dane()
-        podsumowanie = "\n".join(f"{n} ({s}): {g:.2f}h -> {kwoty[n]:.2f} zł" for n, s, g in sorted(godziny, key=lambda x: -x[2]))
-        niedopasowani = [n for n, s, g in godziny if s not in ("kuchnia", "bar") and n.lower() not in dopasowani]
+        podsumowanie = "\n".join(f"{n} ({s}): {g:.2f}h -> {kwoty[n]:.2f} zł" for n, s, g in sorted(godziny_kelnerzy, key=lambda x: -x[2]))
+        niedopasowani = [n for n, s, g in godziny_kelnerzy if n.lower() not in dopasowani]
         info_extra = f"\n\nNie znaleziono w tabeli kelnerów wiersza dla: {', '.join(niedopasowani)} (ich udział nie został nigdzie wpisany)" if niedopasowani else ""
-        messagebox.showinfo("Kalkulator", f"Podzielono proporcjonalnie do godzin (suma {suma_godzin:.2f}h):\n\n{podsumowanie}{info_extra}")
+        messagebox.showinfo(
+            "Kalkulator",
+            f"Kuchnia: {kuchnia_suma:.2f} zł (zawsze 25%, płasko)\n"
+            f"Bar: 0.00 zł (wykluczony z podziału)\n"
+            f"Kelnerzy: {pula_kelnerzy:.2f} zł — 75% podzielone proporcjonalnie do godzin (suma {suma_godzin:.2f}h):\n\n"
+            f"{podsumowanie}{info_extra}",
+        )
 
     def oblicz_napiwki_gotowka(self):
         pula = self.pobierz_float(self.gotowka_pula_var.get())
@@ -3064,21 +3082,30 @@ class KawiarniaOSApp:
         godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
                    if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
 
-        # Wspolna pula dla WSZYSTKICH (kuchnia + bar/kelnerzy razem) - dzielona
-        # proporcjonalnie do godzin, bez osobnego "podzialu 25/75" dla kuchni.
-        suma_godzin = sum(g for _, _, g in godziny)
+        # Ta sama zasada co w zakladce "Rozliczenie Dnia" (podziel_serwis):
+        # Kuchnia dostaje zawsze plaskie 25% calej puli (niezaleznie od
+        # godzin), Bar jest calkowicie wykluczony z podzialu (0 zl), a
+        # pozostale 75% jest dzielone proporcjonalnie do godzin TYLKO miedzy
+        # kelnerow (sekcja inna niz "kuchnia"/"bar"/"admin").
+        kuchnia_suma = round(pula * 0.25, 2)
+        pula_kelnerzy = round(pula - kuchnia_suma, 2)
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() not in ("kuchnia", "bar")]
+        suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
 
-        linie = [f"PULA GOTÓWKI: {pula:.2f} zł  (wspólna pula dla wszystkich, w tym kuchni)", ""]
+        linie = [
+            f"PULA GOTÓWKI: {pula:.2f} zł", "",
+            f"Kuchnia: {kuchnia_suma:.2f} zł (zawsze 25%, płasko, niezależnie od godzin)",
+            "Bar: 0.00 zł (wykluczony z podziału serwisu)", "",
+        ]
 
-        if godziny and suma_godzin > 0:
-            linie.append(f"--- WSZYSCY ({suma_godzin:.2f}h łącznie) ---")
-            for n, s, g in sorted(godziny, key=lambda x: -x[2]):
-                etykieta = " [kuchnia]" if s == "kuchnia" else ""
-                linie.append(f"  {n}{etykieta}: {g:.2f}h -> {(pula * g / suma_godzin):.2f} zł")
+        if godziny_kelnerzy and suma_godzin > 0:
+            linie.append(f"--- KELNERZY, 75% = {pula_kelnerzy:.2f} zł ({suma_godzin:.2f}h łącznie) ---")
+            for n, s, g in sorted(godziny_kelnerzy, key=lambda x: -x[2]):
+                linie.append(f"  {n}: {g:.2f}h -> {(pula_kelnerzy * g / suma_godzin):.2f} zł")
             razem = pula
         else:
-            linie.append("  Brak godzin w Obecnościach dla tego dnia — nie można podzielić proporcjonalnie.")
-            razem = 0.0
+            linie.append(f"  Brak godzin kelnerów w Obecnościach dla tego dnia — 75% puli ({pula_kelnerzy:.2f} zł) nie zostało podzielone.")
+            razem = kuchnia_suma
 
         linie.append("")
         linie.append(f"RAZEM WYPŁACONE: {razem:.2f} zł")
