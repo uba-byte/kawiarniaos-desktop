@@ -17,6 +17,7 @@ import webbrowser
 import sys
 import subprocess
 import tempfile
+import threading
 from datetime import datetime
 
 # --- Dawny, wlasny backend Freyonatora (Supabase) - uzywany TYLKO do
@@ -847,32 +848,38 @@ class KawiarniaOSApp:
 
     def _sprawdz_aktualizacje(self):
         """Sprawdza online, czy jest nowsza wersja programu (nie blokuje pracy -
-        tylko informuje, bez pobrania automatycznego). Cicho pomija przy braku internetu."""
-        try:
-            req = urllib.request.Request(
-                f"{FREYA_SUPABASE_URL}/rest/v1/wersje?select=wersja,url_pobierania,opis&order=utworzono.desc&limit=1",
-                headers={"apikey": FREYA_SUPABASE_ANON_KEY, "Authorization": f"Bearer {FREYA_SUPABASE_ANON_KEY}"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
-                wynik = json.loads(resp.read().decode("utf-8"))
-            if not (isinstance(wynik, list) and wynik):
-                return
-            najnowsza = wynik[0]
-            def _jako_tuple(w):
-                try:
-                    return tuple(int(x) for x in str(w).strip().split("."))
-                except Exception:
-                    return (0,)
-            if _jako_tuple(najnowsza.get("wersja")) > _jako_tuple(APP_WERSJA):
-                url = najnowsza.get("url_pobierania") or ""
-                opis = najnowsza.get("opis") or ""
-                tresc = f"Dostępna jest nowsza wersja programu: {najnowsza.get('wersja')} (masz {APP_WERSJA}).\n\n{opis}"
-                if url:
-                    tresc += f"\n\nPobierz tutaj:\n{url}"
-                messagebox.showinfo("Nowa wersja KawiarniaOS", tresc)
-        except Exception as e:
-            self._log_siec(f"sprawdz_aktualizacje: {type(e).__name__}: {e}")
+        tylko informuje, bez pobrania automatycznego). Cicho pomija przy braku internetu.
+        Zapytanie sieciowe dziala w osobnym watku (do 6s timeout), zeby NIE
+        opozniac pokazania sie glownego okna - wczesniej dzialo to
+        synchronicznie w __init__, przed mainloop(), wiec kazdy start
+        programu czekal na odpowiedz serwera zanim cokolwiek bylo widac."""
+        def _w_tle():
+            try:
+                req = urllib.request.Request(
+                    f"{FREYA_SUPABASE_URL}/rest/v1/wersje?select=wersja,url_pobierania,opis&order=utworzono.desc&limit=1",
+                    headers={"apikey": FREYA_SUPABASE_ANON_KEY, "Authorization": f"Bearer {FREYA_SUPABASE_ANON_KEY}"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
+                    wynik = json.loads(resp.read().decode("utf-8"))
+                if not (isinstance(wynik, list) and wynik):
+                    return
+                najnowsza = wynik[0]
+                def _jako_tuple(w):
+                    try:
+                        return tuple(int(x) for x in str(w).strip().split("."))
+                    except Exception:
+                        return (0,)
+                if _jako_tuple(najnowsza.get("wersja")) > _jako_tuple(APP_WERSJA):
+                    url = najnowsza.get("url_pobierania") or ""
+                    opis = najnowsza.get("opis") or ""
+                    tresc = f"Dostępna jest nowsza wersja programu: {najnowsza.get('wersja')} (masz {APP_WERSJA}).\n\n{opis}"
+                    if url:
+                        tresc += f"\n\nPobierz tutaj:\n{url}"
+                    self.root.after(0, lambda: messagebox.showinfo("Nowa wersja KawiarniaOS", tresc))
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"sprawdz_aktualizacje: {type(e).__name__}: {e}"))
+        threading.Thread(target=_w_tle, daemon=True).start()
 
     def _numer_buildu_lokalny(self):
         """Numer builda TEJ zainstalowanej kopii (tylko spakowana wersja Windows,
@@ -897,26 +904,32 @@ class KawiarniaOSApp:
         NIE musza sami szukac strony/pobierac pliku za kazdym razem - wystarczy
         kliknac "Tak" w oknie. Nie blokuje pracy programu - cicho pomija przy
         braku internetu, braku numeru builda (np. kopia z kodu zrodlowego) albo
-        na innym systemie niz Windows."""
+        na innym systemie niz Windows. Sprawdzenie i ewentualne pobranie
+        instalatora (do 90s) dzialaja w osobnym watku, zeby NIE opozniac
+        pokazania sie glownego okna programu."""
         if sys.platform != "win32" or not getattr(sys, "frozen", False):
             return
         numer_lokalny = self._numer_buildu_lokalny()
         if numer_lokalny is None:
             return
-        try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/uba-byte/kawiarniaos-desktop/releases/latest",
-                headers={"Accept": "application/vnd.github+json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
-                dane = json.loads(resp.read().decode("utf-8"))
-            tag = str(dane.get("tag_name") or "")
-            if not tag.startswith("build-"):
-                return
-            numer_zdalny = int(tag.split("build-", 1)[1])
-            if numer_zdalny <= numer_lokalny:
-                return
+
+        def _pobierz_i_uruchom():
+            try:
+                url_pobierania = "https://github.com/uba-byte/kawiarniaos-desktop/releases/latest/download/KawiarniaOS-Setup.exe"
+                tmp_sciezka = os.path.join(tempfile.gettempdir(), "KawiarniaOS-Setup.exe")
+                req2 = urllib.request.Request(url_pobierania, method="GET")
+                with urllib.request.urlopen(req2, timeout=90, context=self._kontekst_ssl()) as resp2:
+                    with open(tmp_sciezka, "wb") as f:
+                        shutil.copyfileobj(resp2, f)
+                def _uruchom():
+                    subprocess.Popen([tmp_sciezka], shell=False)
+                    self.root.destroy()
+                    sys.exit(0)
+                self.root.after(0, _uruchom)
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"aktualizacja_windows (pobieranie): {type(e).__name__}: {e}"))
+
+        def _zapytaj(numer_zdalny):
             if not messagebox.askyesno(
                 "Aktualizacja KawiarniaOS",
                 f"Dostępna jest nowa wersja programu (build {numer_zdalny}, masz build {numer_lokalny}).\n\n"
@@ -924,17 +937,28 @@ class KawiarniaOSApp:
                 "wystarczy kliknąć „Dalej” kilka razy.",
             ):
                 return
-            url_pobierania = "https://github.com/uba-byte/kawiarniaos-desktop/releases/latest/download/KawiarniaOS-Setup.exe"
-            tmp_sciezka = os.path.join(tempfile.gettempdir(), "KawiarniaOS-Setup.exe")
-            req2 = urllib.request.Request(url_pobierania, method="GET")
-            with urllib.request.urlopen(req2, timeout=90, context=self._kontekst_ssl()) as resp2:
-                with open(tmp_sciezka, "wb") as f:
-                    shutil.copyfileobj(resp2, f)
-            subprocess.Popen([tmp_sciezka], shell=False)
-            self.root.destroy()
-            sys.exit(0)
-        except Exception as e:
-            self._log_siec(f"aktualizacja_windows: {type(e).__name__}: {e}")
+            threading.Thread(target=_pobierz_i_uruchom, daemon=True).start()
+
+        def _w_tle():
+            try:
+                req = urllib.request.Request(
+                    "https://api.github.com/repos/uba-byte/kawiarniaos-desktop/releases/latest",
+                    headers={"Accept": "application/vnd.github+json"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
+                    dane = json.loads(resp.read().decode("utf-8"))
+                tag = str(dane.get("tag_name") or "")
+                if not tag.startswith("build-"):
+                    return
+                numer_zdalny = int(tag.split("build-", 1)[1])
+                if numer_zdalny <= numer_lokalny:
+                    return
+                self.root.after(0, lambda: _zapytaj(numer_zdalny))
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"aktualizacja_windows: {type(e).__name__}: {e}"))
+
+        threading.Thread(target=_w_tle, daemon=True).start()
 
     def wczytaj_ustawienia(self):
         if os.path.exists(self.sciezka(self.plik_ustawien)):
