@@ -1717,9 +1717,16 @@ class KawiarniaOSApp:
         tk.Label(frame_bot, text="Karta Kasa:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=4, padx=(0, 6), pady=(6, 10), sticky="e")
         ekk = tk.Entry(frame_bot, textvariable=self.raport_karta_kasa_var, width=12, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); ekk.grid(row=0, column=5, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(ekk)
 
+        # Liczba paragonow (do wyliczenia sredniego rachunku na Dashboardzie
+        # KOS) - celowo za raportem fiskalnym i terminalami, przed Fakturami,
+        # zgodnie z proshba Jakuba.
+        self.paragony_var = tk.StringVar(value="0")
+        tk.Label(frame_bot, text="Liczba paragonów:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=6, padx=(10, 6), pady=(6, 10), sticky="e")
+        epar = tk.Entry(frame_bot, textvariable=self.paragony_var, width=12, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); epar.grid(row=0, column=7, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(epar)
+
         self.faktury_var = tk.StringVar(value="0.0"); self.faktury_var.trace_add("write", self.weryfikuj_dane)
-        tk.Label(frame_bot, text="Faktury [AA]:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=6, padx=(10, 6), pady=(6, 10), sticky="e")
-        efak = tk.Entry(frame_bot, textvariable=self.faktury_var, width=12, bg=self.pole_uwaga_bg, fg=self.pole_uwaga_fg, insertbackground=self.pole_uwaga_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); efak.grid(row=0, column=7, pady=(6, 10)); self.przypnij_czyszczenie_zer(efak)
+        tk.Label(frame_bot, text="Faktury [AA]:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=8, padx=(10, 6), pady=(6, 10), sticky="e")
+        efak = tk.Entry(frame_bot, textvariable=self.faktury_var, width=12, bg=self.pole_uwaga_bg, fg=self.pole_uwaga_fg, insertbackground=self.pole_uwaga_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); efak.grid(row=0, column=9, pady=(6, 10)); self.przypnij_czyszczenie_zer(efak)
 
         self.lbl_suma_kart = tk.Label(frame_bot, text="Suma kart: 0.00", font=(self.czcionka_nazwa, 9, "italic"), bg=self.karta_bg, fg=self.tekst_muted)
         self.lbl_suma_kart.grid(row=1, column=2, columnspan=4)
@@ -2790,13 +2797,13 @@ class KawiarniaOSApp:
         self._styl_tabela_rozliczenia(ws, liczba_kolumn, liczba_wierszy_naglowka=2)
 
         ws2 = wb.create_sheet("WERYFIKACJA DNIA")
-        naglowki2 = ["Data", "Fiskal", "Faktury", "Karta mob. (raport)", "Karta kasa (raport)", "Gotówka sprawdzona", "Rozlicza", "Komentarz"]
+        naglowki2 = ["Data", "Fiskal", "Faktury", "Karta mob. (raport)", "Karta kasa (raport)", "Liczba paragonów", "Gotówka sprawdzona", "Rozlicza", "Komentarz"]
         for i, n in enumerate(naglowki2, start=1):
             ws2.cell(row=1, column=i, value=n)
         for w in sorted(weryfikacje, key=lambda x: x.get("data") or ""):
             ws2.append([
                 w.get("data"), w.get("fiskal"), w.get("faktury"), w.get("karta_mob_raport"), w.get("karta_kasa_raport"),
-                w.get("gotowka_sprawdzona"), w.get("osoba"), w.get("komentarz"),
+                w.get("liczba_paragonow"), w.get("gotowka_sprawdzona"), w.get("osoba"), w.get("komentarz"),
             ])
         self._styl_tabela_eksportu(ws2, len(naglowki2))
 
@@ -3402,6 +3409,7 @@ class KawiarniaOSApp:
         self.faktury_var.set(str(wer.get("faktury") if wer.get("faktury") is not None else "0.0"))
         self.raport_karta_mob_var.set(str(wer.get("karta_mob_raport") if wer.get("karta_mob_raport") is not None else "0.0"))
         self.raport_karta_kasa_var.set(str(wer.get("karta_kasa_raport") if wer.get("karta_kasa_raport") is not None else "0.0"))
+        self.paragony_var.set(str(int(wer.get("liczba_paragonow"))) if wer.get("liczba_paragonow") is not None else "0")
         self.osoba_var.set(str(wer.get("osoba") or ""))
         self.komentarz_txt.delete("1.0", tk.END)
         self.komentarz_txt.insert("1.0", str(wer.get("komentarz") or ""))
@@ -3466,10 +3474,12 @@ class KawiarniaOSApp:
             self.pobierz_float,
             [self.fiskal_var.get(), self.faktury_var.get(), self.raport_karta_mob_var.get(), self.raport_karta_kasa_var.get()],
         )
+        paragony = int(round(self.pobierz_float(self.paragony_var.get())))
         weryfikacja = {
             "fiskal": fisk, "faktury": fakt,
             "karta_mob_raport": tmob, "karta_kasa_raport": tkas,
             "gotowka_sprawdzona": suma_sprawdz,
+            "liczba_paragonow": paragony,
             "osoba": osoba,
             "komentarz": komentarz,
         }
