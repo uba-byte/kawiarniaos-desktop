@@ -1,6 +1,6 @@
 #define MyAppName "KawiarniaOS"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "KawiarniaOS / Freyonator"
+#define MyAppPublisher "Jakub Szydlik"
 #define MyAppExeName "KawiarniaOS.exe"
 
 [Setup]
