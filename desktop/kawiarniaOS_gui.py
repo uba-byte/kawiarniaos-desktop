@@ -1123,6 +1123,25 @@ class KawiarniaOSApp:
             elif event.delta < 0:
                 docelowy.yview_scroll(2, "units")
 
+    def _blokuj_scroll_na_combo(self, combo):
+        """Podpiete pod kazdy ttk.Combobox z lista pracownikow/typow.
+
+        Domyslnie ttk.Combobox lapie <MouseWheel> (i <Button-4>/<Button-5> na
+        Linuksie) i samo w sobie zmienia wybrana wartosc - bez otwierania
+        listy. W tej aplikacji zakladki sa przewijane scrollem (patrz
+        _on_mousewheel), wiec zwykle przewijanie strony myszka nad takim
+        polem potrafi po cichu podmienic wybranego pracownika (albo typ
+        operacji kasowej) na innego, bez kliknincia. Tutaj przekierowujemy
+        scroll do tej samej logiki co reszta strony i zwracamy "break", zeby
+        zablokowac domyslne dzialanie Comboboxa.
+        """
+        def _handler(event):
+            self._on_mousewheel(event)
+            return "break"
+        combo.bind("<MouseWheel>", _handler)
+        combo.bind("<Button-4>", _handler)
+        combo.bind("<Button-5>", _handler)
+
     def wybierz_kolor_tla(self):
         kolor = colorchooser.askcolor(initialcolor=self.kolor_tla)[1]
         if kolor: self.kolor_tla_var.set(kolor); self.lbl_wybrany_kolor_tla.config(text=kolor, bg=kolor)
@@ -1795,6 +1814,7 @@ class KawiarniaOSApp:
         self.osoba_var = tk.StringVar()
         self.osoba_cb = ttk.Combobox(fa, textvariable=self.osoba_var, values=self.lista_kelnerow, width=20); self.osoba_cb.grid(row=0, column=1, sticky="nw", pady=5)
         self.osoba_cb.bind('<KeyRelease>', lambda e, cb=self.osoba_cb: self.autocomplete_pracownik(e, cb))
+        self._blokuj_scroll_na_combo(self.osoba_cb)
         
         tk.Label(fa, text=self.txt_komentarz, bg=self.kolor_tla, fg=self.kolor_czcionki, justify="right").grid(row=0, column=2, sticky="ne", pady=5, padx=20)
         kf = tk.Frame(fa, bg=self.kolor_tla, highlightthickness=1, highlightbackground=self.karta_border); kf.grid(row=0, column=3, sticky="we", pady=5)
@@ -1872,6 +1892,7 @@ class KawiarniaOSApp:
         self.kasa_typ_var = tk.StringVar(value=self._kasa_typy_opis[0])
         typ_cb = ttk.Combobox(fd, textvariable=self.kasa_typ_var, values=self._kasa_typy_opis, state="readonly", width=28)
         typ_cb.grid(row=0, column=1, padx=8, pady=8, sticky="w")
+        self._blokuj_scroll_na_combo(typ_cb)
 
         tk.Label(fd, text="Data (RRRR-MM-DD):", bg=self.karta_bg, fg=self.kolor_czcionki,
                  font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=2, padx=8, pady=8, sticky="e")
@@ -2315,6 +2336,7 @@ class KawiarniaOSApp:
         self.pods_pracownik_var = tk.StringVar(value="")
         self.pods_pracownik_cb = ttk.Combobox(wiersz_pods, textvariable=self.pods_pracownik_var, values=getattr(self, "lista_kelnerow_raport", []), width=22)
         self.pods_pracownik_cb.grid(row=0, column=1, padx=(0, 16), ipady=2)
+        self._blokuj_scroll_na_combo(self.pods_pracownik_cb)
 
         tk.Label(wiersz_pods, text="Rok:", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=2, padx=(0, 6))
         self.pods_rok_var = tk.StringVar(value=now.strftime("%Y"))
@@ -2339,6 +2361,7 @@ class KawiarniaOSApp:
         cb = ttk.Combobox(self.frame_obecnosci, values=self.lista_kelnerow, width=16)
         if domyslny_pracownik: cb.set(domyslny_pracownik)
         cb.grid(row=idx, column=0, padx=8, pady=6, sticky="w")
+        self._blokuj_scroll_na_combo(cb)
         cb.bind('<KeyRelease>', lambda e, c=cb: self.autocomplete_pracownik(e, c))
 
         # Sekcja (bar/kuchnia/admin) nie jest juz wybierana recznie - wynika
@@ -3107,6 +3130,7 @@ class KawiarniaOSApp:
         cb = ttk.Combobox(self.frame_mid, values=self._lista_kelnerow_bez_kuchni(), width=14); cb.grid(row=wid, column=0, padx=4, pady=4)
         if domyslny_pracownik: cb.set(domyslny_pracownik)
         cb.bind('<KeyRelease>', lambda e, c=cb: self.autocomplete_pracownik(e, c, self._lista_kelnerow_bez_kuchni()))
+        self._blokuj_scroll_na_combo(cb)
         
         vip = tk.Entry(self.frame_mid, width=8, bg=self.pole_ostrzezenie_bg, fg=self.pole_ostrzezenie_fg, insertbackground=self.pole_ostrzezenie_fg, **_wej_kw); vip.insert(0, "0.0"); vip.grid(row=wid, column=1, padx=4, pady=4)
         kmob = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); kmob.insert(0, "0.0"); kmob.grid(row=wid, column=2, padx=4, pady=4)
