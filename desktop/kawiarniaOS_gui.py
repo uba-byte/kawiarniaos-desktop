@@ -3673,6 +3673,12 @@ class KawiarniaOSApp:
                     headers={"Authorization": f"Bearer {access_token}"},
                 )
                 if status == 200 and isinstance(dane, dict):
+                    # Polaczenie z KOS zadzialalo - nawet gdy firma ma jeszcze
+                    # 0 pracownikow (nowy klient), NIE wolno wtedy spadac do
+                    # zapasowego szablon.xlsx. Ten plik to tylko lokalny
+                    # fallback na wypadek, gdy KOS jest niedostepny - a nie
+                    # dla "konto jeszcze bez pracownikow".
+                    pobrano_z_kos = True
                     wykluczeni_kos = set()
                     imiona_po_pierwszym = {}  # pierwsze imie (male) -> sekcja, albo False gdy niejednoznaczne (dwie osoby, rozne sekcje)
                     for p in (dane.get("pracownicy") or []):
@@ -3699,9 +3705,7 @@ class KawiarniaOSApp:
                     for pierwsze, sekcja_p in imiona_po_pierwszym.items():
                         if sekcja_p and pierwsze not in self.sekcja_kos_map:
                             self.sekcja_kos_map[pierwsze] = sekcja_p
-                    pobrano_z_kos = bool(self.lista_kelnerow)
-                    if pobrano_z_kos:
-                        self.pracownicy_wykluczeni_kos = wykluczeni_kos
+                    self.pracownicy_wykluczeni_kos = wykluczeni_kos
         except Exception:
             pobrano_z_kos = False
 
