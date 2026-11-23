@@ -18,6 +18,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import datetime
 
 # --- Dawny, wlasny backend Freyonatora (Supabase) - uzywany TYLKO do
@@ -76,6 +77,10 @@ class KawiarniaOSApp:
         self.kos_login = ""
         self.kos_refresh_token = ""
         self.kos_access_token = ""  # tylko w pamieci, NIE zapisywane do pliku ustawien
+        # Znacznik czasu wydania access_token (patrz _kos_access_token_swiezy) -
+        # pozwala NIE odswiezac sesji KOS przy kazdej pojedynczej akcji, tylko
+        # raz na ok. 45 min (token Supabase zyje typowo 60 min).
+        self._kos_access_token_wydany_o = 0
         self.kos_company_id = ""
         self.kos_company_nazwa = ""
         self.kos_plan = ""
@@ -734,6 +739,7 @@ class KawiarniaOSApp:
                 firma = self._kos_pobierz_firme(sesja["access_token"], sesja["user_id"])
                 if firma and firma.get("status_konta") == "active" and firma.get("plan") == "ultra":
                     self.kos_access_token = sesja["access_token"]
+                    self._kos_access_token_wydany_o = time.time()
                     self.kos_refresh_token = sesja.get("refresh_token") or self.kos_refresh_token
                     self.kos_company_id = firma["company_id"]
                     self.kos_company_nazwa = firma["nazwa"]
@@ -817,6 +823,7 @@ class KawiarniaOSApp:
 
         self.kos_login = email
         self.kos_access_token = sesja["access_token"]
+        self._kos_access_token_wydany_o = time.time()
         self.kos_refresh_token = sesja.get("refresh_token", "")
         self.kos_company_id = firma["company_id"]
         self.kos_company_nazwa = firma["nazwa"]
@@ -837,6 +844,7 @@ class KawiarniaOSApp:
         self.kos_login = ""
         self.kos_refresh_token = ""
         self.kos_access_token = ""
+        self._kos_access_token_wydany_o = 0
         self.kos_company_id = ""
         self.kos_company_nazwa = ""
         self.kos_plan = ""
@@ -1532,25 +1540,59 @@ class KawiarniaOSApp:
         self.buduj_zakladke_ustawienia()
 
     def _kos_access_token_swiezy(self):
-        """Zwraca aktualny (odswiezony) access token do KOS, albo None gdy nie
-        udalo sie polaczyc / sesja juz niewazna."""
+        """Zwraca aktualny (odswiezony) access token do KOS, albo None gdy
+        sesja naprawde juz niewazna.
+
+        WAZNE (poprawka "co jakis czas wylogowuje"): ta metoda jest wolana
+        praktycznie z kazdej akcji w programie (wczytanie dnia, zapis
+        obecnosci, podsumowanie miesiaca...). Wczesniej KAZDE takie wywolanie
+        robilo osobne zapytanie sieciowe (odswiezenie sesji) - przy
+        najmniejszej przerwie w wifi kawiarni (timeout 8s) ta JEDNA akcja
+        dostawala None i program od razu kazal sie zalogowac ponownie, mimo
+        ze zapisana sesja wciaz byla w pelni wazna. Teraz:
+        1) cachujemy access_token na ok. 45 minut (token Supabase zyje typowo
+           60 min) - wiekszosc akcji wgl nie dotyka sieci;
+        2) jesli odswiezenie sie nie udalo z powodu BRAKU POLACZENIA (a nie
+           jawnej odmowy serwera), a mamy jeszcze stary token w pamieci,
+           oddajemy go dalej zamiast od razu kazac logowac sie ponownie -
+           jesli faktycznie jeszcze dziala, konkretne zapytanie po prostu
+           sie uda."""
         if not self.kos_refresh_token:
             return None
+
+        teraz = time.time()
+        if (
+            self.kos_access_token
+            and self._kos_access_token_wydany_o
+            and (teraz - self._kos_access_token_wydany_o) < 45 * 60
+        ):
+            return self.kos_access_token
+
         sesja = self._kos_odswiez_sesje(self.kos_refresh_token)
-        if not sesja or not sesja.get("access_token"):
-            return None
-        self.kos_access_token = sesja["access_token"]
-        nowy_refresh = sesja.get("refresh_token")
-        if nowy_refresh and nowy_refresh != self.kos_refresh_token:
-            # Supabase rotuje refresh_token przy kazdym odswiezeniu sesji - stary
-            # token przestaje dzialac od razu po wydaniu nowego. Trzeba go zapisac
-            # na dysk NATYCHMIAST (nie tylko trzymac w pamieci), inaczej po
-            # zamknieciu programu w pliku ustawien zostaje juz "zuzyty" (stary)
-            # refresh_token, serwer go odrzuca przy nastepnym starcie i program
-            # za kazdym razem prosi o ponowne logowanie.
-            self.kos_refresh_token = nowy_refresh
-            self._zapisz_json_ustawien()
-        return self.kos_access_token
+        status_odswiezania = self._ostatni_status_aktywacji
+
+        if sesja and sesja.get("access_token"):
+            self.kos_access_token = sesja["access_token"]
+            self._kos_access_token_wydany_o = teraz
+            nowy_refresh = sesja.get("refresh_token")
+            if nowy_refresh and nowy_refresh != self.kos_refresh_token:
+                # Supabase rotuje refresh_token przy kazdym odswiezeniu sesji - stary
+                # token przestaje dzialac od razu po wydaniu nowego. Trzeba go zapisac
+                # na dysk NATYCHMIAST (nie tylko trzymac w pamieci), inaczej po
+                # zamknieciu programu w pliku ustawien zostaje juz "zuzyty" (stary)
+                # refresh_token, serwer go odrzuca przy nastepnym starcie i program
+                # za kazdym razem prosi o ponowne logowanie.
+                self.kos_refresh_token = nowy_refresh
+                self._zapisz_json_ustawien()
+            return self.kos_access_token
+
+        if status_odswiezania is None and self.kos_access_token:
+            # Brak polaczenia z serwerem WGL (nie: jawna odmowa z kodem HTTP) -
+            # a mamy stary token w pamieci. Nie kasujemy sesji na tej
+            # podstawie - patrz komentarz w docstringu.
+            return self.kos_access_token
+
+        return None
 
     def buduj_zakladke_ustawienia(self):
         KARTA_BG = self.karta_bg
@@ -2364,8 +2406,24 @@ class KawiarniaOSApp:
         self.pill(wiersz_pods, text="Pokaż wszystkich", command=self.pokaz_wszystkie_obecnosci_miesiaca, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
         self.pill(wiersz_pods, text="Eksportuj pliki miesiąca", command=self.eksportuj_pliki_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=8, padx=6, ipady=4)
 
-        self.txt_podsumowanie_godzin = tk.Text(frame_pods, height=12, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, font=("Courier New", 10), wrap="none")
-        self.txt_podsumowanie_godzin.pack(fill="both", expand=True)
+        # Wlasny suwak (pionowy + poziomy, bo wrap="none") dla tego pola -
+        # wczesniej trzeba bylo przewijac cala zakladke (albo nie dalo sie
+        # wgl), zeby zobaczyc dalsza/szersza czesc podsumowania (Text o
+        # stalej wysokosci 12 linii, bez wlasnego suwaka).
+        ramka_pods_txt = tk.Frame(frame_pods, bg=self.karta_bg)
+        ramka_pods_txt.pack(fill="both", expand=True)
+        ramka_pods_txt.grid_rowconfigure(0, weight=1)
+        ramka_pods_txt.grid_columnconfigure(0, weight=1)
+
+        self.txt_podsumowanie_godzin = tk.Text(ramka_pods_txt, height=12, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, font=("Courier New", 10), wrap="none")
+        self.txt_podsumowanie_godzin.grid(row=0, column=0, sticky="nsew")
+
+        suwak_pods_y = ttk.Scrollbar(ramka_pods_txt, orient="vertical", command=self.txt_podsumowanie_godzin.yview)
+        suwak_pods_y.grid(row=0, column=1, sticky="ns")
+        suwak_pods_x = ttk.Scrollbar(ramka_pods_txt, orient="horizontal", command=self.txt_podsumowanie_godzin.xview)
+        suwak_pods_x.grid(row=1, column=0, sticky="ew")
+        self.txt_podsumowanie_godzin.configure(yscrollcommand=suwak_pods_y.set, xscrollcommand=suwak_pods_x.set)
+
         self.txt_podsumowanie_godzin.insert("1.0", "Wybierz pracownika, rok i miesiąc, a potem kliknij „Pokaż”.")
         self.txt_podsumowanie_godzin.config(state="disabled")
 
