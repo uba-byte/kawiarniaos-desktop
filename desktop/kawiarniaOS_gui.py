@@ -2305,6 +2305,20 @@ class KawiarniaOSApp:
         self.pill(frame_top, text=self.txt_wyczysc_obc_btn, command=self.wyczysc_obecnosci, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
         self.pill(frame_top, text="Odśwież wygląd", command=self.odswiez_wyglad_obecnosci, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=8, padx=6, ipady=4)
 
+        # Jakub: "niech bedzie opcja z listy rozwijanej czy edycja czy
+        # usuniecie" - poprzednio jedynym sposobem na poprawienie bledu
+        # (zdublowane wpisy / zle przypisana osoba po przypadkowym scrollu
+        # w Combobox - patrz _blokuj_scroll_na_combo) bylo recznie
+        # wyedytowac wiersze po "Wczytaj Dzien" i zapisac ponownie. Ten
+        # dropdown + przycisk "Wykonaj" daje wprost druga opcje: wyczyscic
+        # caly dzien od zera (usun_dzien_obecnosci), gdy latwiej zaczac od
+        # nowa niz recznie rozplatywac duplikaty.
+        self.obc_akcja_var = tk.StringVar(value="Edytuj dzień")
+        obc_akcja_cb = ttk.Combobox(frame_top, textvariable=self.obc_akcja_var, values=["Edytuj dzień", "Usuń dzień"], width=12, state="readonly")
+        obc_akcja_cb.grid(row=0, column=9, padx=6, ipady=4)
+        self._blokuj_scroll_na_combo(obc_akcja_cb)
+        self.pill(frame_top, text="Wykonaj", command=self.wykonaj_akcje_obecnosci, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=10, padx=6, ipady=4)
+
         self._zw_obc, self.frame_obecnosci = self.zrob_karte(self.tab_obecnosci, self.txt_godziny_naglowek)
         self._zw_obc.pack(fill="both", expand=True, padx=20, pady=10)
 
@@ -2978,6 +2992,66 @@ class KawiarniaOSApp:
             self.dodaj_wiersz_obecnosci(); self.dodaj_wiersz_obecnosci()
         self._toast("Wczytano obecności dnia" if pracownicy else "Brak zapisanych obecności dla tego dnia", typ="sukces")
 
+    def wykonaj_akcje_obecnosci(self):
+        """Rozgalezia dropdown "Edytuj dzien / Usun dzien" (patrz
+        buduj_zakladke_obecnosci) do istniejacego wczytaj_dzien_obecnosci
+        albo do nowego usun_dzien_obecnosci."""
+        if self.obc_akcja_var.get() == "Usuń dzień":
+            self.usun_dzien_obecnosci()
+        else:
+            self.wczytaj_dzien_obecnosci()
+
+    def usun_dzien_obecnosci(self):
+        """Usuwa WSZYSTKIE zapisane obecnosci wybranego dnia z bazy KOS.
+        Wysyla POST z pusta lista p_pracownicy - endpoint
+        app/api/freyonator/obecnosci i tak najpierw robi DELETE calego
+        dnia przed ewentualnym insertem (patrz route.ts), wiec pusta lista
+        = czyste usuniecie, bez zadnych zmian po stronie API."""
+        try:
+            dz = int(self.obc_dzien_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy dzień.")
+
+        try:
+            msc = int(self.obc_miesiac_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy miesiąc.")
+
+        if not messagebox.askyesno(
+            "Usuń dzień",
+            f"Na pewno usunąć WSZYSTKIE zapisane obecności dla "
+            f"{dz:02d}.{msc:02d}.{self.obc_rok_var.get()}?\n\n"
+            "Tego nie da się cofnąć.",
+        ):
+            return
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        body = {"p_rok": int(self.obc_rok_var.get()), "p_miesiac": msc, "p_dzien": dz, "p_pracownicy": []}
+        status, dane = self._kos_http(
+            "POST",
+            f"{KOS_API_URL}/api/freyonator/obecnosci",
+            body=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się usunąć dnia w KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd usuwania", tresc)
+
+        self.wyczysc_obecnosci()
+        self._toast("Usunięto obecności dnia", typ="sukces")
+
     def zapisz_dzien_obecnosci(self):
         """Zapisuje obecnosci dnia bezposrednio do bazy KOS (nie do lokalnego
         Excela - patrz app/api/freyonator/obecnosci). Od Fazy 2 migracji
@@ -3013,6 +3087,30 @@ class KawiarniaOSApp:
                 "pracownik": nazwa, "sekcja": sekcja_cb.get() or "bar",
                 "godz_od": godz_od, "godz_do": godz_do, "godziny": godziny,
             })
+
+        # Jakub: "sprawdz wgl czy dobrze zapisuje obecnosci" - zgloszone
+        # "zmiany sie zdublowaly". Najbardziej prawdopodobne zrodlo: dwa
+        # wiersze z ta sama osoba tego samego dnia. API robi zwykly insert
+        # (bez laczenia/upsertu po pracowniku), wiec takie dwa wiersze
+        # zapisalyby sie jako DWA osobne rekordy i godziny policzylyby sie
+        # podwojnie w podsumowaniu/podziale napiwkow. Przerywamy zapis
+        # zamiast cicho wyslac duplikat.
+        nazwy_widziane = set()
+        duplikaty = set()
+        for wpis in pracownicy:
+            _, nazwa_czysta = self._rozbij_nr_nazwe(wpis["pracownik"])
+            klucz = (nazwa_czysta or wpis["pracownik"]).strip().lower()
+            if klucz in nazwy_widziane:
+                duplikaty.add(wpis["pracownik"])
+            nazwy_widziane.add(klucz)
+        if duplikaty:
+            return messagebox.showerror(
+                "Zduplikowany pracownik",
+                "Ta sama osoba jest wpisana w więcej niż jednym wierszu: "
+                + ", ".join(sorted(duplikaty))
+                + ".\n\nUsuń albo połącz te wiersze przed zapisem - inaczej w bazie "
+                "powstałyby dwa osobne wpisy i godziny policzyłyby się podwójnie.",
+            )
 
         body = {"p_rok": int(self.obc_rok_var.get()), "p_miesiac": int(self.obc_miesiac_var.get()), "p_dzien": dz, "p_pracownicy": pracownicy}
         if getattr(self, "btn_zapisz_obecnosci", None):
