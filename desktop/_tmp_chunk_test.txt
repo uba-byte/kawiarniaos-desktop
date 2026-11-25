@@ -1,1 +1,22 @@
-placeholder
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, colorchooser, filedialog
+import tkinter.font as tkfont
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import shutil
+import os
+import json
+import re
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import base64
+import uuid
+import webbrowser
+import sys
+import subprocess
+import tempfile
+import threading
+import time
+from datetime import datetime
