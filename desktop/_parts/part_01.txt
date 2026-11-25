@@ -1,0 +1,690 @@
+        """Odswieza sesje KOS bez pytania o haslo (uzywane przy kazdym starcie
+        programu, gdy mamy juz zapisany refresh_token). Zwraca dict jak
+        _kos_zaloguj albo None."""
+        status, dane = self._kos_http(
+            "POST",
+            f"{KOS_SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
+            body={"refresh_token": refresh_token},
+            headers={"Content-Type": "application/json", "apikey": KOS_SUPABASE_ANON_KEY},
+        )
+        self._ostatni_status_aktywacji = status
+        if status == 200 and isinstance(dane, dict) and dane.get("access_token"):
+            return {
+                "access_token": dane.get("access_token"),
+                "refresh_token": dane.get("refresh_token", "") or refresh_token,
+                "user_id": (dane.get("user") or {}).get("id", ""),
+            }
+        return None
+
+    def _kos_pobierz_firme(self, access_token, user_id):
+        """Odczytuje firme (company_id/nazwa/plan) zalogowanego uzytkownika KOS -
+        identycznie jak robi to strona KOS po zalogowaniu (company_users ->
+        companies). Zwraca dict {company_id, nazwa, plan, status_konta} albo None."""
+        naglowki = {"apikey": KOS_SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"}
+        status, wiersze = self._kos_http(
+            "GET",
+            f"{KOS_SUPABASE_URL}/rest/v1/company_users?select=company_id,status&user_id=eq.{user_id}",
+            headers=naglowki,
+        )
+        self._ostatni_status_aktywacji = status
+        if status != 200 or not isinstance(wiersze, list) or not wiersze:
+            return None
+        wiersz = wiersze[0]
+        company_id = wiersz.get("company_id")
+        status_konta = wiersz.get("status")
+        if not company_id:
+            return None
+        status2, firmy = self._kos_http(
+            "GET",
+            f"{KOS_SUPABASE_URL}/rest/v1/companies?select=name,plan&id=eq.{company_id}",
+            headers=naglowki,
+        )
+        if status2 != 200 or not isinstance(firmy, list) or not firmy:
+            return None
+        firma = firmy[0]
+        return {
+            "company_id": company_id,
+            "nazwa": firma.get("name") or "",
+            "plan": firma.get("plan") or "",
+            "status_konta": status_konta or "",
+        }
+
+    def _wymagaj_aktywacji_kos(self):
+        """Aktywuje program logowaniem na konto KOS (strona kos-kawiarniaos.vercel.app)
+        i sprawdzeniem planu firmy TAM - zamiast dawnego kodu licencyjnego. Program
+        dziala tylko dla firm na planie Ultra. Zwraca True, gdy program moze dzialac
+        dalej. Przy braku internetu (nie: przy odrzuceniu przez serwer) daje 7 dni
+        tolerancji od ostatniej udanej aktywacji, zeby brak sieci nie blokowal pracy
+        w kawiarni."""
+        self._ostatni_blad_aktywacji = ""
+        self._ostatni_status_aktywacji = None
+
+        # 1) Mamy juz zapisana sesje - sprobuj odswiezyc w tle, bez pytania o
+        #    login/haslo ponownie.
+        if self.kos_refresh_token:
+            sesja = self._kos_odswiez_sesje(self.kos_refresh_token)
+            status_odswiezania = self._ostatni_status_aktywacji
+            if sesja and sesja.get("access_token"):
+                firma = self._kos_pobierz_firme(sesja["access_token"], sesja["user_id"])
+                if firma and firma.get("status_konta") == "active" and firma.get("plan") == "ultra":
+                    self.kos_access_token = sesja["access_token"]
+                    self._kos_access_token_wydany_o = time.time()
+                    self.kos_refresh_token = sesja.get("refresh_token") or self.kos_refresh_token
+                    self.kos_company_id = firma["company_id"]
+                    self.kos_company_nazwa = firma["nazwa"]
+                    self.kos_plan = firma["plan"]
+                    self.ostatnia_udana_aktywacja = datetime.now().strftime("%Y-%m-%d")
+                    self._zapisz_json_ustawien()
+                    return True
+                if firma is not None:
+                    # Serwer odpowiedzial - to realna odmowa (plan nie-Ultra,
+                    # konto wylaczone...), NIE problem z siecia - bez tolerancji.
+                    messagebox.showerror(
+                        "Aktywacja KOS",
+                        f"Firma „{firma.get('nazwa') or '—'}” ma plan „{firma.get('plan') or '—'}”.\n"
+                        "Program wymaga planu Ultra w KOS. Skontaktuj się z administratorem KOS.",
+                    )
+                    return False
+            elif status_odswiezania is not None:
+                # Serwer odrzucil sesje (np. haslo zmienione gdzie indziej) -
+                # przejdz nizej do ponownego logowania, bez tolerancji offline.
+                pass
+            else:
+                # Brak polaczenia z serwerem wgl - tolerancja offline.
+                if self.ostatnia_udana_aktywacja:
+                    try:
+                        dni_od = (datetime.now() - datetime.strptime(self.ostatnia_udana_aktywacja, "%Y-%m-%d")).days
+                    except Exception:
+                        dni_od = 9999
+                    if dni_od <= 7:
+                        return True
+                szczegol = getattr(self, "_ostatni_blad_aktywacji", "")
+                tresc = (
+                    "Nie można połączyć się z KOS (sprawdź internet).\n"
+                    "Program działa maksymalnie 7 dni bez połączenia od ostatniej udanej aktywacji.\n"
+                    "Połącz się z internetem i uruchom program ponownie."
+                )
+                if szczegol:
+                    tresc += f"\n\nSzczegóły techniczne: {szczegol}"
+                messagebox.showerror("Aktywacja", tresc)
+                return False
+
+        # 2) Brak zapisanej / dzialajacej sesji - poproś o zalogowanie na konto KOS.
+        login = simpledialog.askstring("Aktywacja KawiarniaOS", "Login lub e-mail konta KOS:", parent=self.root)
+        if not login or not login.strip():
+            messagebox.showerror("Aktywacja", "Bez zalogowania do konta KOS program nie może działać.")
+            return False
+        haslo = simpledialog.askstring("Aktywacja KawiarniaOS", "Hasło konta KOS:", parent=self.root, show="*")
+        if not haslo:
+            messagebox.showerror("Aktywacja", "Bez hasła program nie może działać.")
+            return False
+
+        email = self._kos_resolve_login_email(login.strip().lower())
+        if not email:
+            szczegol = getattr(self, "_ostatni_blad_aktywacji", "")
+            tresc = "Nie znaleziono konta KOS dla podanego loginu/e-maila (albo brak internetu)."
+            if szczegol:
+                tresc += f"\n\nSzczegóły techniczne: {szczegol}"
+            messagebox.showerror("Aktywacja", tresc)
+            return False
+
+        sesja = self._kos_zaloguj(email, haslo)
+        if not sesja:
+            szczegol = getattr(self, "_ostatni_blad_aktywacji", "")
+            tresc = f"Nie udało się zalogować: {szczegol}" if szczegol else "Nieprawidłowy login lub hasło (albo brak internetu)."
+            messagebox.showerror("Aktywacja", tresc)
+            return False
+
+        firma = self._kos_pobierz_firme(sesja["access_token"], sesja["user_id"])
+        if not firma:
+            messagebox.showerror("Aktywacja", "Zalogowano, ale nie udało się odczytać danych firmy z KOS (sprawdź internet).")
+            return False
+        if firma.get("status_konta") != "active":
+            messagebox.showerror("Aktywacja", "To konto KOS nie jest aktywne.")
+            return False
+        if firma.get("plan") != "ultra":
+            messagebox.showerror(
+                "Aktywacja KOS",
+                f"Firma „{firma.get('nazwa') or '—'}” ma plan „{firma.get('plan') or '—'}”.\n"
+                "Program wymaga planu Ultra w KOS. Skontaktuj się z administratorem KOS.",
+            )
+            return False
+
+        self.kos_login = email
+        self.kos_access_token = sesja["access_token"]
+        self._kos_access_token_wydany_o = time.time()
+        self.kos_refresh_token = sesja.get("refresh_token", "")
+        self.kos_company_id = firma["company_id"]
+        self.kos_company_nazwa = firma["nazwa"]
+        self.kos_plan = firma["plan"]
+        self.ostatnia_udana_aktywacja = datetime.now().strftime("%Y-%m-%d")
+        self._zapisz_json_ustawien()
+        return True
+
+    def wyloguj_kos(self):
+        """Usuwa zapisana sesje konta KOS. Program trzeba ponownie aktywowac
+        (zalogowac) przy nastepnym uruchomieniu - przydatne przy zmianie
+        firmy/konta na tym komputerze."""
+        if not messagebox.askyesno(
+            "Wyloguj z KOS",
+            "Program trzeba będzie ponownie aktywować (zalogować) przy następnym uruchomieniu. Kontynuować?",
+        ):
+            return
+        self.kos_login = ""
+        self.kos_refresh_token = ""
+        self.kos_access_token = ""
+        self._kos_access_token_wydany_o = 0
+        self.kos_company_id = ""
+        self.kos_company_nazwa = ""
+        self.kos_plan = ""
+        self.ostatnia_udana_aktywacja = ""
+        self._zapisz_json_ustawien()
+        if hasattr(self, "lbl_status_kos"):
+            self.lbl_status_kos.config(text="Nie zalogowano.")
+        messagebox.showinfo("Wylogowano", "Uruchom program ponownie, aby zalogować się na inne konto KOS.")
+
+    def _sprawdz_aktualizacje(self):
+        """Sprawdza online, czy jest nowsza wersja programu (nie blokuje pracy -
+        tylko informuje, bez pobrania automatycznego). Cicho pomija przy braku internetu.
+        Zapytanie sieciowe dziala w osobnym watku (do 6s timeout), zeby NIE
+        opozniac pokazania sie glownego okna - wczesniej dzialo to
+        synchronicznie w __init__, przed mainloop(), wiec kazdy start
+        programu czekal na odpowiedz serwera zanim cokolwiek bylo widac."""
+        def _w_tle():
+            try:
+                req = urllib.request.Request(
+                    f"{FREYA_SUPABASE_URL}/rest/v1/wersje?select=wersja,url_pobierania,opis&order=utworzono.desc&limit=1",
+                    headers={"apikey": FREYA_SUPABASE_ANON_KEY, "Authorization": f"Bearer {FREYA_SUPABASE_ANON_KEY}"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
+                    wynik = json.loads(resp.read().decode("utf-8"))
+                if not (isinstance(wynik, list) and wynik):
+                    return
+                najnowsza = wynik[0]
+                def _jako_tuple(w):
+                    try:
+                        return tuple(int(x) for x in str(w).strip().split("."))
+                    except Exception:
+                        return (0,)
+                if _jako_tuple(najnowsza.get("wersja")) > _jako_tuple(APP_WERSJA):
+                    url = najnowsza.get("url_pobierania") or ""
+                    opis = najnowsza.get("opis") or ""
+                    tresc = f"Dostępna jest nowsza wersja programu: {najnowsza.get('wersja')} (masz {APP_WERSJA}).\n\n{opis}"
+                    if url:
+                        tresc += f"\n\nPobierz tutaj:\n{url}"
+                    self.root.after(0, lambda: messagebox.showinfo("Nowa wersja KawiarniaOS", tresc))
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"sprawdz_aktualizacje: {type(e).__name__}: {e}"))
+        threading.Thread(target=_w_tle, daemon=True).start()
+
+    def _numer_buildu_lokalny(self):
+        """Numer builda TEJ zainstalowanej kopii (tylko spakowana wersja Windows,
+        patrz .github/workflows/build-windows-installer.yml - krok "Zapisz numer
+        builda" zapisuje build_info.txt dolaczany do .exe). Brak pliku (np.
+        uruchomienie z kodu zrodlowego) = brak automatycznej aktualizacji."""
+        try:
+            if getattr(sys, "frozen", False):
+                sciezka_pliku = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "build_info.txt")
+            else:
+                sciezka_pliku = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_info.txt")
+            with open(sciezka_pliku, "r", encoding="utf-8") as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+
+    def _sprawdz_i_zainstaluj_aktualizacje_windows(self):
+        """Na Windows (spakowana wersja .exe) sprawdza najnowszy release na
+        GitHub (uba-byte/kawiarniaos-desktop) i - za zgoda uzytkownika - sam
+        pobiera najnowszy instalator i go uruchamia, po czym zamyka ten program
+        (zeby instalator mogl nadpisac plik .exe). Dzieki temu pracownicy kawiarni
+        NIE musza sami szukac strony/pobierac pliku za kazdym razem - wystarczy
+        kliknac "Tak" w oknie. Nie blokuje pracy programu - cicho pomija przy
+        braku internetu, braku numeru builda (np. kopia z kodu zrodlowego) albo
+        na innym systemie niz Windows. Sprawdzenie i ewentualne pobranie
+        instalatora (do 90s) dzialaja w osobnym watku, zeby NIE opozniac
+        pokazania sie glownego okna programu."""
+        if sys.platform != "win32" or not getattr(sys, "frozen", False):
+            return
+        numer_lokalny = self._numer_buildu_lokalny()
+        if numer_lokalny is None:
+            return
+
+        def _pobierz_i_uruchom():
+            try:
+                url_pobierania = "https://github.com/uba-byte/kawiarniaos-desktop/releases/latest/download/KawiarniaOS-Setup.exe"
+                tmp_sciezka = os.path.join(tempfile.gettempdir(), "KawiarniaOS-Setup.exe")
+                req2 = urllib.request.Request(url_pobierania, method="GET")
+                with urllib.request.urlopen(req2, timeout=90, context=self._kontekst_ssl()) as resp2:
+                    with open(tmp_sciezka, "wb") as f:
+                        shutil.copyfileobj(resp2, f)
+                def _uruchom():
+                    subprocess.Popen([tmp_sciezka], shell=False)
+                    self.root.destroy()
+                    sys.exit(0)
+                self.root.after(0, _uruchom)
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"aktualizacja_windows (pobieranie): {type(e).__name__}: {e}"))
+
+        def _zapytaj(numer_zdalny):
+            if not messagebox.askyesno(
+                "Aktualizacja KawiarniaOS",
+                f"Dostępna jest nowa wersja programu (build {numer_zdalny}, masz build {numer_lokalny}).\n\n"
+                "Pobrać i zainstalować teraz? Program się zamknie, a instalator otworzy się automatycznie - "
+                "wystarczy kliknąć „Dalej” kilka razy.",
+            ):
+                return
+            threading.Thread(target=_pobierz_i_uruchom, daemon=True).start()
+
+        def _w_tle():
+            try:
+                req = urllib.request.Request(
+                    "https://api.github.com/repos/uba-byte/kawiarniaos-desktop/releases/latest",
+                    headers={"Accept": "application/vnd.github+json"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=6, context=self._kontekst_ssl()) as resp:
+                    dane = json.loads(resp.read().decode("utf-8"))
+                tag = str(dane.get("tag_name") or "")
+                if not tag.startswith("build-"):
+                    return
+                numer_zdalny = int(tag.split("build-", 1)[1])
+                if numer_zdalny <= numer_lokalny:
+                    return
+                self.root.after(0, lambda: _zapytaj(numer_zdalny))
+            except Exception as e:
+                self.root.after(0, lambda: self._log_siec(f"aktualizacja_windows: {type(e).__name__}: {e}"))
+
+        threading.Thread(target=_w_tle, daemon=True).start()
+
+    def wczytaj_ustawienia(self):
+        if os.path.exists(self.sciezka(self.plik_ustawien)):
+            try:
+                with open(self.sciezka(self.plik_ustawien), "r", encoding="utf-8") as f:
+                    dane = json.load(f)
+                    for klucz, domyslna in vars(self).items():
+                        if klucz in dane: setattr(self, klucz, dane[klucz])
+            except Exception: pass
+
+    def zapisz_ustawienia(self):
+        self.szablon_plik = self.szablon_var.get()
+        self.format_nazwy_pliku = self.format_nazwy_var.get()
+        self.format_nazwy_obecnosci = self.format_nazwy_obecnosci_var.get()
+        self.folder_zapisu = self.folder_zapisu_var.get()
+        self._zapisz_wskaznik_folderu(self.folder_zapisu)
+        self.wykluczeni_napiwki = self.wykluczeni_napiwki_var.get()
+        self.nazwa_programu = self.nazwa_programu_var.get()
+        self.haslo_dostepu = self.haslo_var.get()
+        self.klucz_kuchnia = self.klucz_kuchnia_var.get()
+        self.klucz_bar = self.klucz_bar_var.get()
+        self.klucz_admin = self.klucz_admin_var.get()
+        self.pracownicy_kuchnia = self.pracownicy_kuchnia_var.get()
+        self.pracownicy_bar = self.pracownicy_bar_var.get()
+        self.pracownicy_kelner = self.pracownicy_kelner_var.get()
+        self.pracownicy_admin = self.pracownicy_admin_var.get()
+        self.kolor_tla = self.kolor_tla_var.get()
+        self.kolor_czcionki = self.kolor_czcionki_var.get()
+        self.adresy_email = self.adresy_email_var.get()
+        self.kol_vip = self.kol_vip_var.get()
+        self.kol_kmob = self.kol_kmob_var.get()
+        self.kol_kkasa = self.kol_kkasa_var.get()
+        self.kol_przelewy = self.kol_przelewy_var.get()
+        self.kol_foodsi = self.kol_foodsi_var.get()
+        self.kol_serwis = self.kol_serwis_var.get()
+        self.kol_razem = self.kol_razem_var.get()
+        self.kol_gotowka = self.kol_gotowka_var.get()
+        self.kol_sprawdz = self.kol_sprawdz_var.get()
+        self.kol_roznica = self.kol_roznica_var.get()
+        self.txt_wybor_daty = self.txt_wybor_daty_var.get()
+        self.txt_wprowadzanie = self.txt_wprowadzanie_var.get()
+        self.txt_kalkulator = self.txt_kalkulator_var.get()
+        self.txt_weryfikacja = self.txt_weryfikacja_var.get()
+        self.txt_zapisz_btn = self.txt_zapisz_btn_var.get()
+        self.txt_wyslij_btn = self.txt_wyslij_btn_var.get()
+        self.txt_wczytaj_btn = self.txt_wczytaj_btn_var.get()
+        self.txt_wyczysc_btn = self.txt_wyczysc_btn_var.get()
+        self.txt_kto_rozlicza = self.txt_kto_rozlicza_var.get()
+        self.txt_komentarz = self.txt_komentarz_var.get()
+        self.txt_podziel_btn = self.txt_podziel_btn_var.get()
+        self.txt_dodaj_kelnera_btn = self.txt_dodaj_kelnera_btn_var.get()
+        self.txt_usun_wiersz_btn = self.txt_usun_wiersz_btn_var.get()
+        self.txt_oblicz_gotowka_btn = self.txt_oblicz_gotowka_btn_var.get()
+        self.txt_wczytaj_obc_btn = self.txt_wczytaj_obc_btn_var.get()
+        self.txt_wyczysc_obc_btn = self.txt_wyczysc_obc_btn_var.get()
+        self.txt_dodaj_obc_btn = self.txt_dodaj_obc_btn_var.get()
+        self.txt_zapisz_obc_btn = self.txt_zapisz_obc_btn_var.get()
+        self.txt_kalkulator_gotowka_naglowek = self.txt_kalkulator_gotowka_naglowek_var.get()
+        self.txt_wybor_daty_obc = self.txt_wybor_daty_obc_var.get()
+        self.txt_godziny_naglowek = self.txt_godziny_naglowek_var.get()
+        self.txt_podsumowanie_obc_naglowek = self.txt_podsumowanie_obc_naglowek_var.get()
+        
+        try:
+            szer = int(self.szerokosc_var.get())
+            wys = int(self.wysokosc_var.get())
+            self.szerokosc_okna = szer
+            self.wysokosc_okna = wys
+            self.root.geometry(f"{szer}x{wys}")
+        except ValueError:
+            messagebox.showerror("Błąd", "Szerokość i wysokość okna muszą być liczbami!")
+            return
+
+        self.root.title(self.nazwa_programu)
+        self.root.configure(bg=self.kolor_tla)
+
+        if not self._zapisz_json_ustawien():
+            return
+        messagebox.showinfo("Zapisano", "Ustawienia zapisane!\nZmiany tekstów zostaną natychmiast odświeżone.")
+        for widget in self.root.winfo_children(): widget.destroy()
+        self.buduj_gui()
+        self.odswiez_liste_pracownikow()
+        self._kos_wczytaj_kasa()
+
+    def _zapisz_json_ustawien(self):
+        # BIAŁA LISTA KLUCZY DO ZAPISU (zapobiega błędom ComboBox is not JSON)
+        klucze_bazowe = [
+            "szablon_plik", "format_nazwy_pliku", "nazwa_programu", "haslo_dostepu",
+            "szerokosc_okna", "wysokosc_okna", "klucz_kuchnia", "klucz_bar", "klucz_admin",
+            "pracownicy_kuchnia", "pracownicy_bar", "pracownicy_kelner", "pracownicy_admin",
+            "wiersze_na_dzien", "kolor_tla", "kolor_czcionki", "adresy_email",
+            "format_nazwy_obecnosci", "wykluczeni_napiwki",
+            "kos_login", "kos_refresh_token", "kos_company_id", "kos_company_nazwa", "kos_plan",
+            "ostatnia_udana_aktywacja", "folder_zapisu", "folder_zapisu_obecnosci"
+        ]
+        dane_do_zapisu = {k: getattr(self, k) for k in klucze_bazowe if hasattr(self, k)}
+        for k, v in vars(self).items():
+            if (k.startswith("kol_") or k.startswith("txt_")) and isinstance(v, str):
+                dane_do_zapisu[k] = v
+        try:
+            with open(self.sciezka(self.plik_ustawien), "w", encoding="utf-8") as f:
+                json.dump(dane_do_zapisu, f, ensure_ascii=False, indent=4)
+            return True
+        except Exception as e:
+            messagebox.showerror("Błąd", f"Nie udało się zapisać ustawień:\n{e}")
+            return False
+
+    def sprawdz_dostep(self, event):
+        wybrana = self.notebook.index("current")
+        # Jedyna zakladka za haslem to Ustawienia (ostatnia w notebooku) -
+        # pozostale sa teraz otwarte, dane finansowe i tak zyja w KOS.
+        idx_ustawien = self.notebook.index("end") - 1
+        if wybrana == idx_ustawien and self.haslo_dostepu and not getattr(self, 'odblokowane', False):
+            podane = simpledialog.askstring("Blokada dostępu", "Podaj hasło administratora:", show='*')
+            if podane == self.haslo_dostepu: self.odblokowane = True 
+            else:
+                messagebox.showerror("Odmowa", "Nieprawidłowe hasło lub anulowano.")
+                self.notebook.select(0) 
+
+    def _on_focus_in(self, event):
+        val = event.widget.get().strip()
+        if val in ("0", "0.0", "0.00", "0,0", "0,00"): event.widget.delete(0, tk.END)
+
+    def _on_focus_out(self, event):
+        val = event.widget.get().strip()
+        if not val: event.widget.insert(0, "0.0")
+
+    def przypnij_czyszczenie_zer(self, pole):
+        pole.bind("<FocusIn>", self._on_focus_in)
+        pole.bind("<FocusOut>", self._on_focus_out)
+
+    def _odswiez_licznik_komentarza(self, event=None):
+        if not hasattr(self, "lbl_komentarz_licznik"):
+            return
+        dlugosc = len(self.komentarz_txt.get("1.0", tk.END).strip())
+        wystarczy = dlugosc >= MIN_DLUGOSC_KOMENTARZA
+        self.lbl_komentarz_licznik.config(
+            text=f"{dlugosc} / {MIN_DLUGOSC_KOMENTARZA} znaków" + (" ✓" if wystarczy else ""),
+            fg=self.kolor_sukces if wystarczy else self.kolor_blad,
+        )
+
+    def _on_mousewheel(self, event):
+        try:
+            aktywna = self.notebook.index("current")
+        except Exception:
+            aktywna = 0
+        mapa_canvas = {0: getattr(self, "canvas_obc", None), 1: getattr(self, "canvas", None), 2: getattr(self, "canvas_kasa", None), 3: getattr(self, "canvas_ust", None)}
+        docelowy = mapa_canvas.get(aktywna)
+        if docelowy is None: return
+        if event.num == 4: docelowy.yview_scroll(-1, "units")
+        elif event.num == 5: docelowy.yview_scroll(1, "units")
+        else:
+            # Krok NIEZALEZNY od wielkosci event.delta - liczy sie tylko
+            # kierunek (+/-). Rzeczywista skala delty z gladzika Maca jest
+            # nieprzewidywalna (zalezy od wersji Tk/Pythona i bywa zupelnie
+            # inna niz na Windows, gdzie to zawsze wielokrotnosc 120), wiec
+            # jakiekolwiek dzielenie/mnozenie przez stala dawalo albo brak
+            # ruchu, albo szarpane, zbyt duze skoki. Przy przewijaniu dwoma
+            # palcami te zdarzenia i tak przychodza bardzo czesto, wiec stały
+            # krok 2 jednostek daje plynny, przewidywalny scroll.
+            if event.delta > 0:
+                docelowy.yview_scroll(-2, "units")
+            elif event.delta < 0:
+                docelowy.yview_scroll(2, "units")
+
+    def _blokuj_scroll_na_combo(self, combo):
+        """Podpiete pod kazdy ttk.Combobox z lista pracownikow/typow.
+
+        Domyslnie ttk.Combobox lapie <MouseWheel> (i <Button-4>/<Button-5> na
+        Linuksie) i samo w sobie zmienia wybrana wartosc - bez otwierania
+        listy. W tej aplikacji zakladki sa przewijane scrollem (patrz
+        _on_mousewheel), wiec zwykle przewijanie strony myszka nad takim
+        polem potrafi po cichu podmienic wybranego pracownika (albo typ
+        operacji kasowej) na innego, bez kliknincia. Tutaj przekierowujemy
+        scroll do tej samej logiki co reszta strony i zwracamy "break", zeby
+        zablokowac domyslne dzialanie Comboboxa.
+        """
+        def _handler(event):
+            self._on_mousewheel(event)
+            return "break"
+        combo.bind("<MouseWheel>", _handler)
+        combo.bind("<Button-4>", _handler)
+        combo.bind("<Button-5>", _handler)
+
+    def wybierz_kolor_tla(self):
+        kolor = colorchooser.askcolor(initialcolor=self.kolor_tla)[1]
+        if kolor: self.kolor_tla_var.set(kolor); self.lbl_wybrany_kolor_tla.config(text=kolor, bg=kolor)
+            
+    def wybierz_kolor_czcionki(self):
+        kolor = colorchooser.askcolor(initialcolor=self.kolor_czcionki)[1]
+        if kolor: self.kolor_czcionki_var.set(kolor); self.lbl_wybrany_kolor_czcionki.config(text=kolor, fg=kolor)
+
+    def _rozbij_nr_nazwe(self, n):
+        """Rozdziela tekst pola pracownika na (nr, nazwa). Pole bywa w dwoch
+        formatach: "17 - Jan Kowalski" (stara lista z lokalnego Excela, z
+        numerem) albo po prostu "Jan Kowalski" (lista z KOS, bez numeru) - w
+        tym drugim przypadku nazwisko MOZE zawierac wlasny myslnik (np.
+        "Kowalska-Nowak"), wiec nie mozna po prostu dzielic po pierwszym "-".
+        Numer rozpoznajemy tylko gdy tekst zaczyna sie od cyfr i myslnika -
+        w kazdym innym przypadku caly tekst to nazwa."""
+        n = (n or "").strip()
+        m = re.match(r"^(\d+)\s*-\s*(.+)$", n)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        return "", n
+
+    def _lista_pracownikow_funkcja(self, tekst):
+        return [n.strip().lower() for n in (tekst or "").split(",") if n.strip()]
+
+    def jest_kuchnia(self, nazwa_pracownika):
+        nazwa = (nazwa_pracownika or "").lower()
+        lista = self._lista_pracownikow_funkcja(self.pracownicy_kuchnia)
+        if lista:
+            return any(n in nazwa for n in lista)
+        return self.klucz_kuchnia.lower() in nazwa
+
+    def jest_bar(self, nazwa_pracownika):
+        nazwa = (nazwa_pracownika or "").lower()
+        lista = self._lista_pracownikow_funkcja(self.pracownicy_bar)
+        if lista:
+            return any(n in nazwa for n in lista)
+        return self.klucz_bar.lower() in nazwa
+
+    def jest_admin(self, nazwa_pracownika):
+        """Rola "Admin" - osoby ktore nie biora udzialu w podziale serwisu i
+        nie pojawiaja sie na liscie raportow zmianowych (Rozliczenie Dnia).
+        Patrz uzycie w podziel_serwis / oblicz_napiwki_gotowka /
+        uzupelnij_kelnerow_z_obecnosci / _lista_kelnerow_bez_kuchni."""
+        nazwa = (nazwa_pracownika or "").lower()
+        lista = self._lista_pracownikow_funkcja(self.pracownicy_admin)
+        if lista:
+            return any(n in nazwa for n in lista)
+        return self.klucz_admin.lower() in nazwa
+
+    def _wiersz_to_kuchnia(self, nazwa_pracownika):
+        """Rozpoznaje TEN KONKRETNY zbiorczy wiersz stanowiska "Kuchnia" w
+        Rozliczeniu Dnia (np. "1 - Kuchnia") - PO ROWNOSCI ze slowem-kluczem
+        (self.klucz_kuchnia), NIEZALEZNIE od listy konkretnych pracownikow
+        przypisanych do roli Kuchnia w Ustawieniach (tabelka "Funkcje
+        pracownikow"). To rozroznienie jest kluczowe: rola_kuchnia(nazwa)
+        odpowiada na "czy TA OSOBA ma przypisana role Kuchnia" (np. do
+        filtrowania listy w Rozliczeniu Dnia albo auto-sekcji w
+        Obecnosciach), a to tutaj odpowiada na "czy TO JEST ten jeden,
+        specjalny zbiorczy wiersz stanowiska" - to dwie rozne rzeczy. Gdy
+        jest_kuchnia/jest_bar byly uzywane tu zamiennie, po wypelnieniu
+        tabelki "Funkcje pracownikow" realnymi nazwiskami (np. Bar: "Anna
+        Kowalska") przestawaly rozpoznawac zbiorczy wiersz "Kuchnia"/"Bar"
+        (bo te funkcje zaczynaly sprawdzac TYLKO liste przypisanych osob, a
+        nie slowo-klucz) - przy wczytywaniu dnia tworzyly osobny, nowy
+        wiersz pracownika (np. "1 - Kuchnia") zamiast wpisac serwis do
+        stalego wiersza "Kuchnia", a kazdy pracownik z realnie przypisana
+        rola Bar/Kuchnia mial blokowane pole Serwis we WLASNYM wierszu,
+        tak jakby byl zbiorczym wierszem stanowiska. Rownosc (nie samo
+        "zawiera sie") - zeby pracownik o imieniu zawierajacym slowo-klucz
+        jako fragment (np. "Barbara", "Bartosz" przy kluczu "bar") nie byl
+        mylnie rozpoznany jako ten zbiorczy wiersz."""
+        _, nazwa = self._rozbij_nr_nazwe(nazwa_pracownika or "")
+        return nazwa.strip().lower() == self.klucz_kuchnia.strip().lower()
+
+    def _wiersz_to_bar(self, nazwa_pracownika):
+        """Patrz _wiersz_to_kuchnia - analogicznie dla zbiorczego wiersza "Bar"."""
+        _, nazwa = self._rozbij_nr_nazwe(nazwa_pracownika or "")
+        return nazwa.strip().lower() == self.klucz_bar.strip().lower()
+
+    def _lista_kelnerow_bez_kuchni(self):
+        """Lista pracownikow do wprowadzania utargow w 'Rozliczenie Dnia' -
+        bez REALNYCH OSOB przypisanych do roli Kuchnia (ktore tam nie maja
+        czego wprowadzac - nie obsluguja gosci przy kasie/stoliku) i bez
+        Admina (ktory nie bierze udzialu w rozliczeniach zmianowych w
+        ogole). Zawiera natomiast zawsze same zbiorcze wpisy "Kuchnia" i
+        "Bar" (self.str_kuchnia / self.str_bar) - oba sa normalnie
+        dodawane automatycznie (patrz wyczysc_formularz), ale musza byc
+        tez na tej liscie, zeby mozna je bylo recznie dopisac z listy
+        rozwijanej (np. gdy ktos przypadkiem usunie sztywny wiersz
+        stanowiska i trzeba go przywrocic) - Kuchnia dostaje tu zbiorczy
+        serwis do dalszego recznego rozdzielenia miedzy osoby, Bar to
+        zbiorczy raport z kasy barowej, na ktorej pracuje kilka osob
+        naraz."""
+        wynik = []
+        for wpis in (self.lista_kelnerow or []):
+            _, nazwa = self._rozbij_nr_nazwe(wpis)
+            if not self.jest_kuchnia(nazwa) and not self.jest_admin(nazwa):
+                wynik.append(wpis)
+        for zbiorczy in (self.str_kuchnia, self.str_bar):
+            if zbiorczy and zbiorczy not in wynik:
+                wynik.append(zbiorczy)
+        return wynik
+
+    def jest_kelner(self, nazwa_pracownika):
+        """Rola "Kelner" jest wprost zaznaczana w tabelce funkcji — pracownik
+        może mieć kilka ról naraz, więc to NIE jest zwykłe "ani kuchnia, ani bar"."""
+        nazwa = (nazwa_pracownika or "").lower()
+        lista = self._lista_pracownikow_funkcja(self.pracownicy_kelner)
+        return any(n in nazwa for n in lista)
+
+    def _rebuduj_tabele_funkcji_pracownikow(self):
+        """Buduje tabelkę przypisania ról (Kelner / Kuchnia / Bar / Admin) do
+        każdego pracownika z listy — zamiennik ręcznego wpisywania imion po
+        przecinku. Każda rola to osobny checkbox, więc jeden pracownik może
+        mieć kilka ról naraz (np. Kuchnia + Bar). Na bieżąco aktualizuje
+        self.pracownicy_kuchnia_var / _bar_var / _kelner_var / _admin_var,
+        które zapisz_ustawienia() odczytuje tak samo jak wcześniej pole
+        tekstowe. Admin nie dostaje serwisu i nie pojawia się na liście
+        raportów zmianowych (patrz jest_admin / podziel_serwis /
+        uzupelnij_kelnerow_z_obecnosci)."""
+        if not hasattr(self, "ramka_tabela_funkcji") or not self.ramka_tabela_funkcji.winfo_exists():
+            return
+        for widget in self.ramka_tabela_funkcji.winfo_children():
+            widget.destroy()
+
+        KARTA_BG = self.karta_bg
+        nazwiska = []
+        for wpis in getattr(self, "lista_kelnerow_raport", []) or []:
+            nazwa = wpis.split(" - ", 1)[1].strip() if " - " in wpis else wpis.strip()
+            if nazwa and nazwa not in nazwiska:
+                nazwiska.append(nazwa)
+
+        if not nazwiska:
+            tk.Label(self.ramka_tabela_funkcji, text="Brak pracowników na liście — dodaj ich w sekcji powyżej.",
+                     font=(self.czcionka_nazwa, 9, "italic"), bg=KARTA_BG, fg=self.tekst_muted).grid(row=0, column=0, sticky="w", pady=4)
+            self.pracownicy_kuchnia_var.set("")
+            self.pracownicy_bar_var.set("")
+            self.pracownicy_kelner_var.set("")
+            self.pracownicy_admin_var.set("")
+            return
+
+        role = ("Kelner", "Kuchnia", "Bar", "Admin")
+        tk.Label(self.ramka_tabela_funkcji, text="Pracownik", font=(self.czcionka_nazwa, 10, "bold"),
+                 bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=0, column=0, sticky="w", padx=(0, 16), pady=(0, 6))
+        for col, rola in enumerate(role, start=1):
+            tk.Label(self.ramka_tabela_funkcji, text=rola, font=(self.czcionka_nazwa, 10, "bold"),
+                     bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=0, column=col, padx=(0, 14), pady=(0, 6))
+
+        # pracownik -> {"Kelner": BooleanVar, "Kuchnia": BooleanVar, "Bar": BooleanVar, "Admin": BooleanVar}
+        self.funkcja_pracownika_vars = {}
+        kelner_jawnie = set(self._lista_pracownikow_funkcja(self.pracownicy_kelner))
+
+        def przelicz(*_args):
+            kuchnia, bar, kelner, admin = [], [], [], []
+            for nazwa, vary in self.funkcja_pracownika_vars.items():
+                if vary["Kuchnia"].get(): kuchnia.append(nazwa)
+                if vary["Bar"].get(): bar.append(nazwa)
+                if vary["Kelner"].get(): kelner.append(nazwa)
+                if vary["Admin"].get(): admin.append(nazwa)
+            self.pracownicy_kuchnia_var.set(", ".join(kuchnia))
+            self.pracownicy_bar_var.set(", ".join(bar))
+            self.pracownicy_kelner_var.set(", ".join(kelner))
+            self.pracownicy_admin_var.set(", ".join(admin))
+
+        for idx, nazwa in enumerate(nazwiska, start=1):
+            w_kuchni = self.jest_kuchnia(nazwa)
+            w_barze = self.jest_bar(nazwa)
+            w_admin = self.jest_admin(nazwa)
+            if kelner_jawnie or self.pracownicy_kelner.strip():
+                # Rola Kelner była już kiedyś zapisana tą tabelką - ufamy jej wprost.
+                w_kelner = nazwa.lower() in kelner_jawnie
+            else:
+                # Pierwsze otwarcie po aktualizacji: zachowaj stare domyślne
+                # zachowanie ("nikt przypisany do Kuchni/Bar/Admina = Kelner").
+                w_kelner = not w_kuchni and not w_barze and not w_admin
+
+            tk.Label(self.ramka_tabela_funkcji, text=nazwa, font=(self.czcionka_nazwa, 10),
+                     bg=KARTA_BG, fg=self.kolor_czcionki).grid(row=idx, column=0, sticky="w", padx=(0, 16), pady=2)
+
+            vary = {
+                "Kelner": tk.BooleanVar(value=w_kelner),
+                "Kuchnia": tk.BooleanVar(value=w_kuchni),
+                "Bar": tk.BooleanVar(value=w_barze),
+                "Admin": tk.BooleanVar(value=w_admin),
+            }
+            self.funkcja_pracownika_vars[nazwa] = vary
+            for col, rola in enumerate(role, start=1):
+                tk.Checkbutton(self.ramka_tabela_funkcji, variable=vary[rola], command=przelicz,
+                                bg=KARTA_BG, fg=self.kolor_czcionki, selectcolor=self.kolor_tla,
+                                activebackground=KARTA_BG, activeforeground=self.kolor_czcionki,
+                                highlightthickness=0, bd=0).grid(row=idx, column=col, pady=2)
+
+        przelicz()
+
+    def _ikona_sciezka(self, nazwa_pliku):
+        """Sciezka do pliku w folderze assets/ - dziala tez po spakowaniu do .app
+        (PyInstaller --add-data), patrz build_dmg.sh."""
+        if getattr(sys, "frozen", False):
+            baza = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        else:
+            baza = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(baza, "assets", nazwa_pliku)
+
+    def _ustaw_ikone_okna(self):
+        """Ikona okna/paska zadan - logo KOS na granatowym tle (assets/app_icon_128.png).
+        Nie przerywa startu programu, jesli sie nie uda (np. brak pliku)."""
+        try:
+            self._ikona_okna_img = tk.PhotoImage(file=self._ikona_sciezka("app_icon_128.png"))
