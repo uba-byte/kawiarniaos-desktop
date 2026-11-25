@@ -1,0 +1,690 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, colorchooser, filedialog
+import tkinter.font as tkfont
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import shutil
+import os
+import json
+import re
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import base64
+import uuid
+import webbrowser
+import sys
+import subprocess
+import tempfile
+import threading
+import time
+from datetime import datetime
+
+# --- Dawny, wlasny backend Freyonatora (Supabase) - uzywany TYLKO do
+# sprawdzania nowych wersji programu (patrz _sprawdz_aktualizacje). Program
+# NIE jest juz aktywowany kodem licencyjnym przez ten projekt - patrz
+# "Aktywacja programu przez konto KOS" nizej.
+FREYA_SUPABASE_URL = "https://dlffxncncnnyufdsgnxs.supabase.co"
+FREYA_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRsZmZ4bmNuY25ueXVmZHNnbnhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5NzM0NjIsImV4cCI6MjEwNDU0OTQ2Mn0.mZVeHOQJvIpgpesqcmYqjBPrz6X9FEQf3sfJBMj1Rxo"
+APP_WERSJA = "1.0.0"
+
+# --- Aktywacja programu przez konto KOS (fv-strona-www) ---
+# Program nie uzywa wlasnego kodu licencyjnego - przy starcie loguje sie
+# (login/e-mail + haslo) na to samo konto, ktorym dana osoba loguje sie na
+# stronie KOS, i sprawdza TAM plan firmy. Dziala tylko dla firm na planie
+# Ultra. Uzywa publicznego "publishable" klucza Supabase (bezpieczny do
+# wpisania w kodzie klienckim - to samo robi strona KOS w przegladarce) wraz
+# z sesja (access/refresh token) zwrocona po zalogowaniu - wiec odczyt
+# company_users/companies dziala dzieki tym samym politykom RLS, co na
+# stronie, a NIE dzieki temu kluczowi.
+KOS_SUPABASE_URL = "https://utsbtupupxwrbtdbukot.supabase.co"
+KOS_SUPABASE_ANON_KEY = "sb_publishable_Kqm0H2XrcBQV2hE77yYSjw_gwLv7QtK"
+KOS_API_URL = "https://kos-kawiarniaos.vercel.app"
+
+# Minimalna dlugosc komentarza/raportu zmianowego (zakladka "Rozliczenie
+# Dnia") - wymagana zarowno przy zapisie dnia do KOS (zapisz_excel), jak i
+# przy wysylce raportu mailem (wyslij_raport_email). Komentarz jest teraz
+# zapisywany w KOS (freyonator_dzien_weryfikacja.komentarz) - jest wiec
+# widoczny takze na stronie, nie tylko w mailu.
+MIN_DLUGOSC_KOMENTARZA = 67
+
+class KawiarniaOSApp:
+    def __init__(self, root):
+        self.root = root
+        
+        self.plik_ustawien = "ustawienia_freya.json"
+        self.szablon_plik = "szablon.xlsx"
+        self.format_nazwy_pliku = "Rozliczenie_{miesiac}.xlsx"
+        self.format_nazwy_obecnosci = "Obecnosci_{rok}.xlsx"
+        self.wykluczeni_napiwki = "Kuba"
+        self.pracownicy_wykluczeni_kos = set()  # imiona (lowercase) z flaga wykluczony_z_napiwkow=True w KOS
+        self.nazwa_programu = "KawiarniaOS"
+        self.haslo_dostepu = ""
+        self.szerokosc_okna = 1280
+        self.wysokosc_okna = 850
+        self.klucz_kuchnia = "kuchnia"
+        self.klucz_bar = "bar"
+        self.klucz_admin = "admin"
+        self.pracownicy_kuchnia = ""
+        self.pracownicy_bar = ""
+        self.pracownicy_kelner = ""
+        self.pracownicy_admin = ""
+        self.wiersze_na_dzien = 12
+        self.adresy_email = ""
+        # Aktywacja przez konto KOS (patrz _wymagaj_aktywacji_kos) - zastapila
+        # dawny kod licencyjny.
+        self.kos_login = ""
+        self.kos_refresh_token = ""
+        self.kos_access_token = ""  # tylko w pamieci, NIE zapisywane do pliku ustawien
+        # Znacznik czasu wydania access_token (patrz _kos_access_token_swiezy) -
+        # pozwala NIE odswiezac sesji KOS przy kazdej pojedynczej akcji, tylko
+        # raz na ok. 45 min (token Supabase zyje typowo 60 min).
+        self._kos_access_token_wydany_o = 0
+        self.kos_company_id = ""
+        self.kos_company_nazwa = ""
+        self.kos_plan = ""
+        self.ostatnia_udana_aktywacja = ""
+        self.folder_zapisu = ""
+        self.folder_zapisu_obecnosci = ""
+        
+        self.kolor_tla = "#10182B"
+        self.kolor_czcionki = "#F5F7FA"
+        self.karta_bg = "#161F36"
+        self.karta_border = "#283355"
+        self.tekst_muted = "#9AA5C0"
+        self.kolor_sukces = "#4ADE80"
+        self.kolor_blad = "#F87171"
+        # --- Dodatkowe tokeny (audyt kos-desktop-audit, 2026-11): te trzy
+        # kolory byly wczesniej wpisywane jako gole literaly hex w ~17
+        # miejscach w pliku (czesc z nich byla tez zwyklym duplikatem juz
+        # istniejacych tokenow powyzej) - scentralizowane tutaj, zeby zmiana
+        # odcienia/marki byla jedna linijka, a nie grep-and-replace po calym
+        # pliku.
+        self.kolor_header_bg = "#0A0F1D"  # tlo paska naglowka (ciemniejsze niz kolor_tla)
+        self.kolor_header_muted = "#8B96AD"  # przygaszony tekst na naglowku
+        self.kolor_bialy = "#FFFFFF"
+
+        # --- Pola wejsciowe na kartach: wczesniej czesc pol miala jaskrawe,
+        # jasne tla (bialy/pastelowy) z czarnym tekstem - kontrastowalo to
+        # ostro z ciemnym motywem calej aplikacji. Teraz kazde pole to
+        # stonowany, zabarwiony odcien tla karty + jasny tekst, zachowujac to
+        # samo znaczenie kolorow (czerwony=recznie wpisywane/ostrzezenie,
+        # niebieski=wyliczane automatycznie, zielony=potwierdzone/sukces,
+        # bursztynowy=dane zewnetrzne z kasy fiskalnej).
+        self.pole_bg = self._rozjasnij_kolor(self.karta_bg, 7)
+        self.pole_fg = self.kolor_czcionki
+        self.pole_ostrzezenie_bg = self._zabarw(self.karta_bg, self.kolor_blad, 0.24)
+        self.pole_ostrzezenie_fg = "#FCA5A5"
+        self.pole_info_bg = self._zabarw(self.karta_bg, "#60A5FA", 0.24)
+        self.pole_info_fg = "#93C5FD"
+        self.pole_sukces_bg = self._zabarw(self.karta_bg, self.kolor_sukces, 0.22)
+        self.pole_sukces_fg = "#86EFAC"
+        self.pole_uwaga_bg = self._zabarw(self.karta_bg, "#FBBF24", 0.22)
+        self.pole_uwaga_fg = "#FCD34D"
+
+        # --- Nowoczesny font: najlepszy dostepny bezszeryfowy font systemowy,
+        # z fallbackiem na Helvetica. Ustawiane raz tutaj, uzywane wszedzie w GUI
+        # (zamiast rozsianych po calym pliku sztywnych literalow self.czcionka_nazwa).
+        try:
+            _dostepne_fonty = set(tkfont.families())
+        except Exception:
+            _dostepne_fonty = set()
+        self.czcionka_nazwa = next(
+            (f for f in ("SF Pro Text", "Inter", "Helvetica Neue", "Segoe UI", "Helvetica", "Arial")
+             if f in _dostepne_fonty),
+            "Helvetica",
+        )
+
+        # --- Jeden spojny kolor akcentujacy dla glownych akcji (zapisz / dodaj),
+        # jeden kolor dla akcji niszczacych (usun) i jeden stonowany styl dla
+        # reszty przyciskow pomocniczych - zamiast kilkunastu konkurujacych barw.
+        self.kolor_akcent = "#16a34a"
+        self.kolor_akcent_fg = "#f0fdf4"
+        self.kolor_niebezpieczny = "#dc2626"
+        self.kolor_niebezpieczny_fg = "#fef2f2"
+        self.kolor_wygaszony_bg = self._rozjasnij_kolor(self.karta_bg, 14)
+        self.kolor_wygaszony_fg = "#C7D0E6"
+
+        self.kol_vip = "VIP/STAFF\n/STRATY"
+        self.kol_kmob = "Karta Mob."
+        self.kol_kkasa = "Karta Kasa"
+        self.kol_przelewy = "Przelewy"
+        self.kol_foodsi = "Foodsi"
+        self.kol_serwis = "Serwis / Tip"
+        self.kol_razem = "Suma Płatności"
+        self.kol_gotowka = "Gotówka (Oczek.)"
+        self.kol_sprawdz = "Zdano (Wpłata)"
+        self.kol_roznica = "Różnica"
+
+        self.txt_wybor_daty = "Wybór Daty (Edycja / Nowy Dzień)"
+        self.txt_wprowadzanie = "Raporty Osobowe"
+        self.txt_kalkulator = "Kalkulator Napiwków (Serwis dzieli się na wszystkich)"
+        self.txt_weryfikacja = "Weryfikacja z Kasą i Terminalami"
+        self.txt_zapisz_btn = "ZAPISZ DZIEŃ W KOS"
+        self.txt_wyslij_btn = "WYŚLIJ RAPORT (GMAIL)"
+        self.txt_wczytaj_btn = "WCZYTAJ Z KOS (Edycja)"
+        self.txt_wyczysc_btn = "WYCZYŚĆ FORMULARZ"
+        self.txt_kto_rozlicza = "Rozlicza (WYMAGANE):"
+        self.txt_komentarz = f"Komentarz / Raport zmianowy (min. {MIN_DLUGOSC_KOMENTARZA} znaków):"
+        self.txt_podziel_btn = "Podziel i Przypisz"
+        self.txt_dodaj_kelnera_btn = "+ Dodaj Kelnera"
+        self.txt_usun_wiersz_btn = "- Usuń"
+        self.txt_oblicz_gotowka_btn = "Oblicz podział"
+        self.txt_wczytaj_obc_btn = "WCZYTAJ DZIEŃ"
+        self.txt_wyczysc_obc_btn = "WYCZYŚĆ"
+        self.txt_dodaj_obc_btn = "+ Dodaj Pracownika"
+        self.txt_zapisz_obc_btn = "ZAPISZ OBECNOŚCI DNIA"
+        self.txt_kalkulator_gotowka_naglowek = "Podział gotówki (tylko podgląd, NIE zapisuje do Excela)"
+        self.txt_wybor_daty_obc = "Wybór Daty (Obecności)"
+        self.txt_godziny_naglowek = "Godziny Pracy (godziny,minuty - np. 19:45 albo 19,45)"
+        self.txt_podsumowanie_obc_naglowek = "Godziny pracy i należny serwis (netto) — pracownicy"
+        
+        self._wczytaj_wskaznik_folderu()
+        pierwsze_uruchomienie = not os.path.exists(self.sciezka(self.plik_ustawien))
+        self.wczytaj_ustawienia()
+        if pierwsze_uruchomienie:
+            self._pierwsze_uruchomienie_wybierz_folder()
+        self._przygotuj_dane_startowe()
+
+        if not self._wymagaj_aktywacji_kos():
+            self.root.destroy()
+            return
+        self._sprawdz_aktualizacje()
+        self._sprawdz_i_zainstaluj_aktualizacje_windows()
+        
+        self.root.title(self.nazwa_programu)
+        _ekran_szer = self.root.winfo_screenwidth()
+        _ekran_wys = self.root.winfo_screenheight()
+        self.szerokosc_okna = max(self.szerokosc_okna, min(_ekran_szer - 50, 1680))
+        self.wysokosc_okna = max(self.wysokosc_okna, min(_ekran_wys - 90, 1040))
+        _poz_x = max(0, (_ekran_szer - self.szerokosc_okna) // 2)
+        _poz_y = max(0, (_ekran_wys - self.wysokosc_okna) // 2 - 10)
+        self.root.geometry(f"{self.szerokosc_okna}x{self.wysokosc_okna}+{_poz_x}+{_poz_y}")
+        self.root.configure(bg=self.kolor_tla)
+        self._ustaw_ikone_okna()
+        
+        self.slownik_miesiecy = {
+            "01": "STYCZEŃ", "02": "LUTY", "03": "MARZEC", "04": "KWIECIEŃ",
+            "05": "MAJ", "06": "CZERWIEC", "07": "LIPIEC", "08": "SIERPIEŃ",
+            "09": "WRZESIEŃ", "10": "PAŹDZIERNIK", "11": "LISTOPAD", "12": "GRUDZIEŃ"
+        }
+        
+        self.wiersze_danych = []
+        self.max_wierszy = self.wiersze_na_dzien
+        self.lista_kelnerow = []
+
+        # Kasa: Wydatki i Wplaty (wydatki gotowkowe z NIP + wplaty do banku,
+        # patrz buduj_zakladke_kasa / app/api/freyonator/kasa-operacje)
+        self.wiersze_kasa = []
+        self._kasa_typy_opis = ["Wydatek gotówkowy (paragon z NIP)", "Wpłata do banku"]
+        self._kasa_typ_backend = {
+            "Wydatek gotówkowy (paragon z NIP)": "wydatek",
+            "Wpłata do banku": "wplata_bank",
+        }
+
+        self.buduj_gui()
+        self.odswiez_liste_pracownikow()
+        self._kos_wczytaj_kasa()
+
+    # ---------- Nowoczesny wyglad: zaokraglone karty i przyciski (liquid glass) ----------
+    def _zaokraglony_ksztalt(self, canvas, x1, y1, x2, y2, promien, **kwargs):
+        promien = max(0, min(promien, (x2 - x1) / 2, (y2 - y1) / 2))
+        pts = [
+            x1 + promien, y1, x2 - promien, y1, x2, y1, x2, y1 + promien,
+            x2, y2 - promien, x2, y2, x2 - promien, y2, x1 + promien, y2,
+            x1, y2, x1, y2 - promien, x1, y1 + promien, x1, y1,
+        ]
+        return canvas.create_polygon(pts, smooth=True, **kwargs)
+
+    def _rozjasnij_kolor(self, kolor_hex, ile=18):
+        try:
+            k = kolor_hex.lstrip("#")
+            r, g, b = (int(k[i:i + 2], 16) for i in (0, 2, 4))
+            r, g, b = (min(255, c + ile) for c in (r, g, b))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return kolor_hex
+
+    def _przyciemnij_kolor(self, kolor_hex, ile=18):
+        try:
+            k = kolor_hex.lstrip("#")
+            r, g, b = (int(k[i:i + 2], 16) for i in (0, 2, 4))
+            r, g, b = (max(0, c - ile) for c in (r, g, b))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return kolor_hex
+
+    def _zabarw(self, baza_hex, kolor_hex, sila=0.22):
+        """Miesza kolor bazowy (tlo karty) z kolorem akcentu w podanej proporcji -
+        daje przyciemniony, stonowany odcien pasujacy do ciemnego motywu (np. pole
+        VIP/Straty: tlo karty lekko zabarwione na czerwono), zamiast jaskrawego
+        jasnego tla kontrastujacego z reszta ciemnej aplikacji."""
+        try:
+            b = baza_hex.lstrip("#"); k = kolor_hex.lstrip("#")
+            br, bgc, bb = (int(b[i:i + 2], 16) for i in (0, 2, 4))
+            kr, kgc, kb = (int(k[i:i + 2], 16) for i in (0, 2, 4))
+            r = int(br + (kr - br) * sila)
+            g = int(bgc + (kgc - bgc) * sila)
+            bl = int(bb + (kb - bb) * sila)
+            return f"#{r:02x}{g:02x}{bl:02x}"
+        except Exception:
+            return baza_hex
+
+    def _toast(self, tekst, typ="sukces", czas_ms=2600):
+        """Nienachalny komunikat znikajacy samoczynnie (zamiast blokujacego
+        messagebox z przyciskiem OK) - uzywany np. po udanym zapisie dnia,
+        zeby nie przerywac pracy dodatkowym klikiem. typ: 'sukces' | 'blad'."""
+        tlo = self.kolor_sukces if typ == "sukces" else self.kolor_blad
+        fg = "#052e16" if typ == "sukces" else "#450a0a"
+        try:
+            ramka = tk.Frame(self.root, bg=tlo, highlightthickness=0)
+            tk.Label(ramka, text=tekst, font=(self.czcionka_nazwa, 11, "bold"), bg=tlo, fg=fg, padx=18, pady=10).pack()
+            ramka.place(relx=0.5, rely=0.96, anchor="s")
+            ramka.lift()
+            self.root.after(czas_ms, ramka.destroy)
+        except Exception:
+            pass
+
+    def zrob_karte(self, rodzic, tytul, promien=16, tlo_karty=None, kolor_ramki=None):
+        """Nowoczesna karta z zaokraglonymi rogami (Canvas) - zamiennik tk.LabelFrame.
+        Tytul "plywa" nad karta wprost na tle strony (bez wlasnego pudelka/tla za
+        slowami) - plaski, wspolczesny uklad zamiast starego paska naglowka
+        wtopionego w kolor karty. Pod karta dorysowywany jest delikatny,
+        rozmyty cien (2 przesuniete warstwy coraz ciemniejsze) dla wrazenia
+        glebi, a sama karta ma wiecej "oddechu" (wieksze marginesy wewnetrzne).
+        Zwraca (zewnetrzna_ramka_do_spakowania, wewnetrzna_ramka_na_tresc)."""
+        tlo_karty = tlo_karty or self.karta_bg
+        kolor_ramki = kolor_ramki or self.karta_border
+        tlo_strony = self.kolor_tla
+        tytul_h = 28
+        cien_1 = self._przyciemnij_kolor(tlo_strony, 5)
+        cien_2 = self._przyciemnij_kolor(tlo_strony, 9)
+        zewn = tk.Frame(rodzic, bg=tlo_strony)
+        platno = tk.Canvas(zewn, highlightthickness=0, bd=0, bg=tlo_strony)
+        platno.place(x=0, y=0, relwidth=1, relheight=1)
+        wewn = tk.Frame(zewn, bg=tlo_karty)
+        wewn.pack(fill="both", expand=True, padx=22, pady=(tytul_h + 20, 20))
+
+        def przerysuj(event=None):
+            platno.delete("all")
+            w, h = zewn.winfo_width(), zewn.winfo_height()
+            if w > 6 and h > 6 + tytul_h:
+                # Cien: dwie coraz ciemniejsze, przesuniete w dol-prawo warstwy
+                # pod kartą - tani (bez alpha-blendingu) ale czytelny substytut
+                # miekkiego box-shadow.
+                self._zaokraglony_ksztalt(platno, 4, tytul_h + 4, w + 2, h + 2, promien,
+                                           fill=cien_1, outline="")
+                self._zaokraglony_ksztalt(platno, 2, tytul_h + 2, w, h, promien,
+                                           fill=cien_2, outline="")
+                # Tytul rysowany NAD kartą, na tle strony - bez tla za slowami.
+                platno.create_text(22, tytul_h - 10, text=tytul, anchor="w",
+                                    fill=self.tekst_muted, font=(self.czcionka_nazwa, 11, "bold"))
+                self._zaokraglony_ksztalt(platno, 1, tytul_h, w - 1, h - 1, promien,
+                                           fill=tlo_karty, outline=kolor_ramki, width=1.3)
+                platno.create_line(promien, tytul_h + 1, w - promien, tytul_h + 1,
+                                    fill=self._rozjasnij_kolor(tlo_karty, 30), width=1)
+            platno.tk.call("lower", platno._w)
+
+        zewn.bind("<Configure>", przerysuj)
+        return zewn, wewn
+
+    def pill(self, rodzic, text="", command=None, bg="#2563eb", fg="#ffffff",
+             font=None, height=None, width=None, outline=False, disabled=False, **_ign):
+        """Przycisk w stylu 'pigulki' (zaokraglone rogi, polysk liquid-glass) - zamiennik tk.Button.
+        outline=True -> styl drugorzedny: sam obrys w kolorze `bg` bez wypelnienia,
+        zeby nie konkurowal wzrokowo z glownym kolorem akcentu (self.kolor_akcent).
+        disabled=True -> przycisk od razu wygaszony i nieklikalny; stan mozna
+        zmieniac pozniej przez zwrocony obiekt: przycisk.ustaw_aktywny(True/False).
+        Widoczne sa 4 stany: hover, wcisniecie (active), focus (obwodka po Tab)
+        i disabled (wygaszony, szary tekst, brak reakcji na klik/hover)."""
+        czcionka = font or (self.czcionka_nazwa, 10, "bold")
+        try:
+            tf = tkfont.Font(family=czcionka[0], size=czcionka[1] if len(czcionka) > 1 else 10,
+                              weight=czcionka[2] if len(czcionka) > 2 else "normal")
+            szer_tekstu = tf.measure(text)
+        except Exception:
+            szer_tekstu = max(60, len(text) * 8)
+        wys = 34 if not height else int(34 + (height - 1) * 20)
+        szer = width if width else max(92, szer_tekstu + 42)
+        try:
+            tlo_rodzica = rodzic["bg"]
+        except Exception:
+            tlo_rodzica = self.kolor_tla
+
+        platno = tk.Canvas(rodzic, width=szer, height=wys, highlightthickness=0, bd=0,
+                            bg=tlo_rodzica, cursor="arrow" if disabled else "hand2", takefocus=1)
+        stan = {"hover": False, "wcisniety": False, "focus": False, "aktywny": not disabled}
+
+        def kolor_wypelnienia():
+            if not stan["aktywny"]:
+                return self.kolor_wygaszony_bg
+            if outline:
+                return tlo_rodzica
+            if stan["wcisniety"]:
+                return self._przyciemnij_kolor(bg, 28)
+            if stan["hover"]:
+                return self._rozjasnij_kolor(bg, 16)
+            return bg
+
+        def kolor_tekstu():
+            if not stan["aktywny"]:
+                return self.kolor_wygaszony_fg
+            return bg if outline else fg
+
+        def rysuj(event=None):
+            platno.delete("all")
+            w = platno.winfo_width() or szer
+            h = platno.winfo_height() or wys
+            r = h / 2
+            k = kolor_wypelnienia()
+            ma_obrys = outline and stan["aktywny"]
+            self._zaokraglony_ksztalt(platno, 1, 1, w - 1, h - 1, r, fill=k,
+                                       outline=bg if ma_obrys else "", width=1.6 if ma_obrys else 0)
+            if not outline and stan["aktywny"]:
+                platno.create_line(r * 0.6, 3, max(r * 0.6 + 1, w - r * 0.6), 3,
+                                    fill=self._rozjasnij_kolor(k, 45), width=1)
+            if stan["focus"] and stan["aktywny"]:
+                self._zaokraglony_ksztalt(platno, 0, 0, w, h, r + 1, fill="",
+                                           outline=self._rozjasnij_kolor(bg, 60), width=2)
+            platno.create_text(w / 2, h / 2, text=text, fill=kolor_tekstu(), font=czcionka)
+
+        def wywolaj():
+            if stan["aktywny"] and command:
+                command()
+
+        def wcisniecie(e):
+            if not stan["aktywny"]:
+                return
+            stan["wcisniety"] = True
+            rysuj()
+
+        def puszczenie(e):
+            if not stan["aktywny"]:
+                return
+            byl = stan["wcisniety"]
+            stan["wcisniety"] = False
+            rysuj()
+            if byl:
+                wywolaj()
+
+        def wejscie(e):
+            if not stan["aktywny"]:
+                return
+            stan["hover"] = True
+            rysuj()
+
+        def wyjscie(e):
+            stan["hover"] = False
+            rysuj()
+
+        def fokus_wszedl(e):
+            stan["focus"] = True
+            rysuj()
+
+        def fokus_wyszedl(e):
+            stan["focus"] = False
+            rysuj()
+
+        def klawisz(e):
+            wywolaj()
+
+        def ustaw_aktywny(aktywny):
+            stan["aktywny"] = bool(aktywny)
+            platno.config(cursor="hand2" if stan["aktywny"] else "arrow")
+            rysuj()
+
+        def ustaw_tekst(nowy_tekst):
+            """Zmienia napis na przycisku w locie (np. 'Zapisywanie…' na czas
+            zapytania sieciowego) - dodane w audycie kos-desktop-audit, zeby
+            dlugie zapisy (kasa/obecnosci) mialy widoczny stan zajety zamiast
+            po prostu 'zamrazac' okno bez zadnej informacji dla operatora."""
+            nonlocal text
+            text = nowy_tekst
+            rysuj()
+
+        platno.bind("<Configure>", rysuj)
+        platno.bind("<ButtonPress-1>", wcisniecie)
+        platno.bind("<ButtonRelease-1>", puszczenie)
+        platno.bind("<Enter>", wejscie)
+        platno.bind("<Leave>", wyjscie)
+        platno.bind("<FocusIn>", fokus_wszedl)
+        platno.bind("<FocusOut>", fokus_wyszedl)
+        platno.bind("<Return>", klawisz)
+        platno.bind("<space>", klawisz)
+        platno.ustaw_aktywny = ustaw_aktywny
+        platno.ustaw_tekst = ustaw_tekst
+        return platno
+
+    def _sciezka_wskaznika_folderu(self):
+        """Stała lokalizacja (niezależna od wybranego folderu zapisu), w której
+        program zapisuje INFORMACJĘ o tym, jaki folder zapisu wybrał użytkownik.
+        Dzięki temu program potrafi odnaleźć własny folder zapisu przy starcie,
+        zanim jeszcze wczyta z niego plik ustawień."""
+        baza = os.path.join(os.path.expanduser("~"), "Documents", "KawiarniaOS")
+        try:
+            os.makedirs(baza, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(baza, "folder_wskaznik.txt")
+
+    def _wczytaj_wskaznik_folderu(self):
+        try:
+            p = self._sciezka_wskaznika_folderu()
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    wartosc = f.read().strip()
+                if wartosc and os.path.isdir(wartosc):
+                    self.folder_zapisu = wartosc
+        except Exception:
+            pass
+
+    def _zapisz_wskaznik_folderu(self, folder):
+        try:
+            p = self._sciezka_wskaznika_folderu()
+            folder = (folder or "").strip()
+            if folder:
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(folder)
+            elif os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+    def _pierwsze_uruchomienie_wybierz_folder(self):
+        """Przy pierwszym uruchomieniu na nowym komputerze pyta, gdzie mają być
+        zapisywane pliki programu (Excel, ustawienia) - domyślnie ~/Documents/KawiarniaOS,
+        ale można od razu wskazać inny folder (np. Dropbox/iCloud jako kopia zapasowa)."""
+        domyslny = self._katalog_danych()
+        try:
+            wlasny = messagebox.askyesno(
+                "Folder zapisu plików",
+                "Witaj w KawiarniaOS!\n\n"
+                f"Domyślnie pliki programu (Excel, ustawienia) będą zapisywane w:\n{domyslny}\n\n"
+                "Czy chcesz teraz wskazać inny folder (np. w Dropbox lub iCloud, żeby mieć automatyczną kopię zapasową)?",
+                parent=self.root,
+            )
+        except Exception:
+            wlasny = False
+        if wlasny:
+            wybrany = filedialog.askdirectory(title="Wybierz folder zapisu plików KawiarniaOS", parent=self.root)
+            if wybrany:
+                self.folder_zapisu = wybrany
+                self._zapisz_wskaznik_folderu(wybrany)
+        # Pytanie o folder obecności
+        try:
+            wlasny_obc = messagebox.askyesno(
+                "Folder pliku Obecności",
+                "Czy plik Obecności (lista godzin pracy) ma być zapisywany w INNYM folderze niż pliki rozliczeń?\n\n"
+                "(np. współdzielony folder na dysku sieciowym lub inny komputer)",
+                parent=self.root,
+            )
+        except Exception:
+            wlasny_obc = False
+        if wlasny_obc:
+            wybrany_obc = filedialog.askdirectory(title="Wybierz folder zapisu pliku Obecności", parent=self.root)
+            if wybrany_obc:
+                self.folder_zapisu_obecnosci = wybrany_obc
+
+    def _katalog_danych(self):
+        """Folder z danymi programu (Excel, ustawienia) na nowym komputerze:
+        domyślnie ~/Documents/KawiarniaOS. Jeśli program działa w folderze,
+        w którym pliki już są (dotychczasowa instalacja), ten folder ma priorytet
+        - patrz sciezka().
+        """
+        baza = os.path.join(os.path.expanduser("~"), "Documents", "KawiarniaOS")
+        try: os.makedirs(baza, exist_ok=True)
+        except Exception: pass
+        return baza
+
+    def sciezka(self, nazwa_pliku):
+        """Zwraca pełną ścieżkę do pliku danych (Excel/ustawienia). Jeśli plik
+        istnieje w bieżącym katalogu (dotychczasowy sposób działania programu),
+        używa go bez zmian. W przeciwnym razie, jeśli w Ustawieniach wybrano własny
+        folder zapisu, używa go. Inaczej używa domyślnego folderu z danymi programu
+        (~/Documents/KawiarniaOS) - ważne przy pierwszej instalacji na nowym
+        komputerze, gdzie taki plik jeszcze nie istnieje w folderze programu.
+        """
+        if os.path.exists(nazwa_pliku):
+            return nazwa_pliku
+        if getattr(self, "folder_zapisu", ""):
+            try:
+                os.makedirs(self.folder_zapisu, exist_ok=True)
+            except Exception:
+                pass
+            return os.path.join(self.folder_zapisu, nazwa_pliku)
+        return os.path.join(self._katalog_danych(), nazwa_pliku)
+
+    def _sciezka_wbudowanego_szablonu(self):
+        """Ścieżka do szablon.xlsx dołączonego do aplikacji (przy budowaniu .app/.dmg
+        ten plik jest częścią programu i służy jako wzorzec przy pierwszym uruchomieniu)."""
+        if getattr(sys, "frozen", False):
+            return os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "szablon.xlsx")
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "szablon.xlsx")
+
+    def _przygotuj_dane_startowe(self):
+        """Przy pierwszym uruchomieniu na nowym komputerze: jeśli nigdzie nie ma
+        jeszcze szablonu Excela, kopiuje wzorcowy szablon.xlsx dołączony do programu
+        do folderu z danymi (~/Documents/KawiarniaOS)."""
+        try:
+            docelowy = self.sciezka(self.szablon_plik)
+            if not os.path.exists(docelowy):
+                wbudowany = self._sciezka_wbudowanego_szablonu()
+                if os.path.exists(wbudowany):
+                    os.makedirs(os.path.dirname(docelowy), exist_ok=True)
+                    shutil.copy(wbudowany, docelowy)
+        except Exception:
+            pass
+
+    def _id_komputera(self):
+        """Stabilne, losowe ID tego komputera/instalacji (nie sprzetowe) - zapisane
+        raz w folderze z danymi programu. Uzywane do przypisania licencji do 1 komputera."""
+        plik_id = self.sciezka("id_komputera.txt")
+        try:
+            if os.path.exists(plik_id):
+                with open(plik_id, "r", encoding="utf-8") as f:
+                    zawartosc = f.read().strip()
+                    if zawartosc:
+                        return zawartosc
+        except Exception:
+            pass
+        nowy_id = str(uuid.uuid4())
+        try:
+            with open(plik_id, "w", encoding="utf-8") as f:
+                f.write(nowy_id)
+        except Exception:
+            pass
+        return nowy_id
+
+    def _kontekst_ssl(self):
+        """Kontekst SSL do polaczen HTTPS z Supabase. Doklada certyfikaty z pakietu
+        certifi (jesli jest dostepny) do domyslnego magazynu systemowego - to
+        naprawia typowy problem na macOS, gdzie Python (np. z instalatora python.org)
+        nie ma wgranych certyfikatow root i polaczenia HTTPS zawodza z bledem SSL."""
+        if getattr(self, "_ssl_ctx_cache", None) is not None:
+            return self._ssl_ctx_cache
+        ctx = None
+        try:
+            ctx = ssl.create_default_context()
+        except Exception:
+            ctx = None
+        if ctx is not None:
+            try:
+                import certifi
+                ctx.load_verify_locations(certifi.where())
+            except Exception:
+                pass
+        self._ssl_ctx_cache = ctx
+        return ctx
+
+    def _log_siec(self, tekst):
+        """Zapisuje krotka linie diagnostyczna o bledach polaczenia z serwerem do
+        pliku log_sieci.txt w folderze danych programu - przydatne przy zdalnej
+        pomocy, zeby nie zgadywac co poszlo nie tak (np. blad certyfikatu SSL vs
+        brak internetu)."""
+        try:
+            with open(self.sciezka("log_sieci.txt"), "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {tekst}\n")
+        except Exception:
+            pass
+
+    def _kos_http(self, method, url, body=None, headers=None):
+        """Pomocnicze wywolanie HTTP do KOS/Supabase. Zwraca (status, dane) - status
+        to kod HTTP (nawet dla bledow typu 400/401/403, bo serwer wtedy ODPOWIEDZIAL),
+        albo (None, None) gdy polaczenie sie nie udalo wgl (np. brak internetu) -
+        to rozroznienie jest wazne dla tolerancji offline w _wymagaj_aktywacji_kos."""
+        try:
+            dane_wyj = json.dumps(body).encode("utf-8") if body is not None else None
+            req = urllib.request.Request(url, data=dane_wyj, headers=headers or {}, method=method)
+            with urllib.request.urlopen(req, timeout=8, context=self._kontekst_ssl()) as resp:
+                surowe = resp.read().decode("utf-8")
+                return resp.status, (json.loads(surowe) if surowe else None)
+        except urllib.error.HTTPError as e:
+            try:
+                surowe = e.read().decode("utf-8")
+                return e.code, (json.loads(surowe) if surowe else None)
+            except Exception:
+                return e.code, None
+        except Exception as e:
+            self._ostatni_blad_aktywacji = f"{type(e).__name__}: {e}"
+            self._log_siec(f"kos_http: {self._ostatni_blad_aktywacji}")
+            return None, None
+
+    def _kos_resolve_login_email(self, login):
+        """Zamienia login/nazwe uzytkownika KOS na jego e-mail (tak jak robi to
+        strona KOS przy logowaniu) - zwraca e-mail albo None."""
+        status, dane = self._kos_http(
+            "POST",
+            f"{KOS_SUPABASE_URL}/rest/v1/rpc/resolve_login_email",
+            body={"p_login": login},
+            headers={
+                "Content-Type": "application/json",
+                "apikey": KOS_SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {KOS_SUPABASE_ANON_KEY}",
+            },
+        )
+        if status == 200 and isinstance(dane, str) and dane.strip():
+            return dane.strip()
+        return None
+
+    def _kos_zaloguj(self, email, haslo):
+        """Loguje na konto KOS (Supabase Auth, email+haslo - identycznie jak na
+        stronie). Zwraca dict {access_token, refresh_token, user_id} albo None."""
+        status, dane = self._kos_http(
+            "POST",
+            f"{KOS_SUPABASE_URL}/auth/v1/token?grant_type=password",
+            body={"email": email, "password": haslo},
+            headers={"Content-Type": "application/json", "apikey": KOS_SUPABASE_ANON_KEY},
+        )
+        self._ostatni_status_aktywacji = status
+        if status == 200 and isinstance(dane, dict) and dane.get("access_token"):
+            return {
+                "access_token": dane.get("access_token"),
+                "refresh_token": dane.get("refresh_token", ""),
+                "user_id": (dane.get("user") or {}).get("id", ""),
+            }
+        if isinstance(dane, dict):
+            self._ostatni_blad_aktywacji = dane.get("error_description") or dane.get("msg") or dane.get("error") or ""
+        return None
+
+    def _kos_odswiez_sesje(self, refresh_token):
