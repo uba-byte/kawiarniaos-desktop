@@ -1,0 +1,690 @@
+
+        kwota = self.pobierz_float(self.kasa_kwota_var.get())
+        if kwota <= 0:
+            return messagebox.showwarning("Nieprawidłowa kwota", "Kwota musi być większa od zera.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.\n"
+                "Operacja NIE została zapisana.",
+            )
+
+        body = {
+            "p_data": data_wpis,
+            "p_typ": typ,
+            "p_kwota": kwota,
+            "p_opis": self.kasa_opis_var.get().strip(),
+            "p_nip": "",
+            "p_numer_dokumentu": "",
+            "p_dodal": self.kos_login,
+        }
+
+        # Zapytanie leci w osobnym watku, dokladnie jak _sprawdz_aktualizacje
+        # (patrz tam) - zeby okno NIE zamrazalo sie na czas polaczenia z KOS
+        # (do 8s timeoutu), zwlaszcza przy slabszym wifi w kawiarni. Przycisk
+        # jest wygaszony i pokazuje "Zapisywanie…" przez caly ten czas, zeby
+        # bylo od razu widac, ze program dziala, a nie "zawiesil sie" -
+        # znaleziony w audycie kos-desktop-audit brak informacji zwrotnej
+        # przy tym zapisie.
+        przycisk = getattr(self, "btn_dodaj_operacje_kasa", None)
+        if przycisk:
+            przycisk.ustaw_aktywny(False)
+            przycisk.ustaw_tekst("Zapisywanie…")
+
+        def _w_tle():
+            status, dane = self._kos_http(
+                "POST", f"{KOS_API_URL}/api/freyonator/kasa-operacje", body=body,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+            )
+            self.root.after(0, lambda: _po_odpowiedzi(status, dane))
+
+        def _po_odpowiedzi(status, dane):
+            if przycisk:
+                przycisk.ustaw_aktywny(True)
+                przycisk.ustaw_tekst("Dodaj operację")
+            if status != 200:
+                szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+                tresc = "Nie udało się dodać operacji w KOS. Operacja NIE została zapisana."
+                if status is None:
+                    tresc += "\n\nBrak połączenia z internetem."
+                elif szczegol:
+                    tresc += f"\n\n{szczegol}"
+                return messagebox.showerror("Błąd zapisu", tresc)
+
+            self.kasa_kwota_var.set("0.0")
+            self.kasa_opis_var.set("")
+            self._toast("Dodano operację ✓", typ="sukces")
+            self._kos_wczytaj_kasa()
+
+        threading.Thread(target=_w_tle, daemon=True).start()
+
+    def _kos_usun_operacje_kasa(self, op_id):
+        if not op_id:
+            return
+        if not messagebox.askyesno("Usuń operację", "Czy na pewno usunąć tę operację kasową?"):
+            return
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\nSprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+        status, dane = self._kos_http(
+            "DELETE", f"{KOS_API_URL}/api/freyonator/kasa-operacje?id={urllib.parse.quote(str(op_id))}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się usunąć operacji."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd usuwania", tresc)
+        self._toast("Usunięto operację", typ="sukces")
+        self._kos_wczytaj_kasa()
+
+    # ===================== OBECNOŚCI (GODZINY PRACY) =====================
+    # Układ pliku: kolumna = pracownik (od/do), tworzona dynamicznie przy pierwszym użyciu.
+    # Wiersz = rzeczywisty dzień kalendarzowy (bez sztucznego dopełniania do 31), więc plik
+    # sam dopasowuje się do dowolnej liczby dni w miesiącu i dowolnej liczby pracowników.
+
+    NAGLOWEK_OBC = 3  # wiersze 1=sekcja, 2=imię, 3=od/do
+    MIESIACE_OBC = ["STYCZEŃ", "LUTY", "MARZEC", "KWIECIEŃ", "MAJ", "CZERWIEC",
+                    "LIPIEC", "SIERPIEŃ", "WRZESIEŃ", "PAŹDZIERNIK", "LISTOPAD", "GRUDZIEŃ"]
+
+    def get_plik_obecnosci_rok(self, rok):
+        nazwa = self.format_nazwy_obecnosci.replace("{rok}", str(rok))
+        # Jeśli plik istnieje lokalnie, użyj go
+        if os.path.exists(nazwa):
+            return nazwa
+        # Jeśli ustawiono osobny folder dla obecności, użyj go
+        fol_obc = getattr(self, "folder_zapisu_obecnosci", "")
+        if fol_obc:
+            try: os.makedirs(fol_obc, exist_ok=True)
+            except Exception: pass
+            return os.path.join(fol_obc, nazwa)
+        return self.sciezka(nazwa)
+
+    def get_plik_obecnosci(self):
+        rok = self.obc_rok_var.get() if hasattr(self, 'obc_rok_var') else datetime.now().strftime("%Y")
+        return self.get_plik_obecnosci_rok(rok)
+
+    def dni_w_miesiacu(self, rok, miesiac):
+        import calendar
+        try:
+            return calendar.monthrange(int(rok), int(miesiac))[1]
+        except Exception:
+            return 31
+
+    def wiersz_obecnosci(self, rok, miesiac, dzien):
+        """Wiersz w pliku Obecności dla konkretnego dnia (etykieta miesiąca + realne dni + SUMA na miesiąc)."""
+        r = self.NAGLOWEK_OBC + 1
+        for m in range(1, int(miesiac)):
+            r += 1 + self.dni_w_miesiacu(rok, m) + 1  # etykieta + dni + SUMA
+        r += 1  # etykieta biezacego miesiaca
+        return r + (int(dzien) - 1)
+
+    def wiersz_suma_miesiaca(self, rok, miesiac):
+        return self.wiersz_obecnosci(rok, miesiac, self.dni_w_miesiacu(rok, miesiac)) + 1
+
+    def godz_na_dziesietna(self, tekst):
+        """Zamienia wpisany czas na godziny dziesietnie (do obliczen). System
+        jest MINUTOWY, nie dziesietny: "8:45", "8,45" i "8.45" to wszystko
+        8 godzin i 45 MINUT (czyli 8.75h), a nie 8.45 godziny dziesietnej -
+        tak jak na zegarku, zeby nie trzeba bylo przeliczac minut na ulamek
+        godziny. Dwukropek, przecinek i kropka dzialaja tu identycznie jako
+        separator godzin/minut. Sam numer bez separatora (np. "8") to dalej
+        pelne godziny."""
+        tekst = (tekst or "").strip()
+        if not tekst: return None
+        try:
+            for sep in (":", ",", "."):
+                if sep in tekst:
+                    h, m = tekst.split(sep, 1)
+                    h = h.strip(); m = m.strip() or "0"
+                    return int(h) + int(m) / 60.0
+            return float(tekst)
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    def dziesietna_na_godz(self, wartosc):
+        if wartosc is None or wartosc == "": return ""
+        try: wartosc = float(wartosc)
+        except (ValueError, TypeError): return ""
+        h = int(wartosc); m = round((wartosc - h) * 60)
+        if m == 60: h += 1; m = 0
+        return f"{h:02d}:{m:02d}"
+
+    def utworz_plik_obecnosci(self, rok):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "OBECNOSCI"
+        ws.cell(row=self.NAGLOWEK_OBC, column=1, value="Dzień")
+        for m in range(1, 13):
+            etykieta_r = self.wiersz_obecnosci(rok, m, 1) - 1
+            ws.cell(row=etykieta_r, column=1, value=self.MIESIACE_OBC[m - 1])
+            for d in range(1, self.dni_w_miesiacu(rok, m) + 1):
+                ws.cell(row=self.wiersz_obecnosci(rok, m, d), column=1, value=d)
+            ws.cell(row=self.wiersz_suma_miesiaca(rok, m), column=1, value="SUMA")
+        self._style_obecnosci(ws, rok)
+        plik = self.get_plik_obecnosci()
+        wb.save(plik)
+        wb.close()
+        return plik
+
+    def _style_obecnosci(self, ws, rok, miesiac_do_rozwiniecia=None):
+        """Nadaje plikowi Obecności kolorowy, czytelny wygląd: nagłówki sekcji/imion,
+        naprzemienne tło dni, wyróżnione weekendy, pogrubione wiersze SUMA, oraz
+        grupowanie (zwijanie/rozwijanie) miesięcy - domyślnie rozwinięty jest tylko
+        bieżący miesiąc kalendarzowy (pozostałe są domyślnie zwinięte), ale eksport
+        miesiąca może podać miesiac_do_rozwiniecia, żeby to on był widoczny."""
+        import calendar
+        if miesiac_do_rozwiniecia:
+            miesiac_biezacy = int(miesiac_do_rozwiniecia)
+        else:
+            try:
+                miesiac_biezacy = int(datetime.now().strftime("%m"))
+            except Exception:
+                miesiac_biezacy = 1
+
+        ostatnia_kolumna = 2
+        col = 2
+        while ws.cell(row=2, column=col).value:
+            ostatnia_kolumna = col + 1
+            col += 2
+
+        cienka = Side(style="thin", color="d1d5db")
+        ramka = Border(left=cienka, right=cienka, top=cienka, bottom=cienka)
+        wyr_centrum = Alignment(horizontal="center", vertical="center")
+        KOLORY_SEKCJI = {"bar": "0d9488", "kuchnia": "d97706"}
+        KOLOR_SEKCJI_JASNY = {"bar": "ccfbf1", "kuchnia": "fef3c7"}
+
+        kom = ws.cell(row=self.NAGLOWEK_OBC, column=1, value=ws.cell(row=self.NAGLOWEK_OBC, column=1).value or "Dzień")
+        kom.font = Font(bold=True, color="ffffff"); kom.fill = PatternFill("solid", fgColor="374151"); kom.alignment = wyr_centrum
+        ws.column_dimensions["A"].width = 9
+
+        col = 2
+        while ws.cell(row=2, column=col).value:
+            sekcja = str(ws.cell(row=1, column=col).value or "bar").strip().lower()
+            kol_ciemny = KOLORY_SEKCJI.get(sekcja, "6b7280")
+            kol_jasny = KOLOR_SEKCJI_JASNY.get(sekcja, "e5e7eb")
+            for c in (col, col + 1):
+                k1 = ws.cell(row=1, column=c); k1.fill = PatternFill("solid", fgColor=kol_ciemny)
+                k1.font = Font(bold=True, color="ffffff"); k1.alignment = wyr_centrum
+                k2 = ws.cell(row=2, column=c); k2.fill = PatternFill("solid", fgColor=kol_jasny)
+                k2.font = Font(bold=True, color="1f2933"); k2.alignment = wyr_centrum
+                k3 = ws.cell(row=3, column=c); k3.fill = PatternFill("solid", fgColor="f1f5f9")
+                k3.font = Font(bold=True, size=8, color="475569"); k3.alignment = wyr_centrum
+                ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 7
+            col += 2
+
+        for m in range(1, 13):
+            etykieta_r = self.wiersz_obecnosci(rok, m, 1) - 1
+            pierwszy = self.wiersz_obecnosci(rok, m, 1)
+            dni = self.dni_w_miesiacu(rok, m)
+            ostatni = self.wiersz_obecnosci(rok, m, dni)
+            suma_r = self.wiersz_suma_miesiaca(rok, m)
+            rozwiniety = (m == miesiac_biezacy)
+
+            for c in range(1, ostatnia_kolumna + 1):
+                kom = ws.cell(row=etykieta_r, column=c)
+                kom.fill = PatternFill("solid", fgColor="1e3a8a")
+                kom.font = Font(bold=True, color="ffffff", size=11)
+            ws.cell(row=etykieta_r, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+            for d in range(1, dni + 1):
+                r = pierwszy + d - 1
+                try:
+                    jest_weekend = calendar.weekday(int(rok), m, d) >= 5
+                except Exception:
+                    jest_weekend = False
+                tlo = "fff1e6" if jest_weekend else ("ffffff" if d % 2 == 0 else "f8fafc")
+                for c in range(1, ostatnia_kolumna + 1):
+                    kom = ws.cell(row=r, column=c)
+                    kom.fill = PatternFill("solid", fgColor=tlo)
+                    kom.border = ramka
+                    if c == 1:
+                        kom.font = Font(bold=jest_weekend, color="9a3412" if jest_weekend else "1f2933")
+                        kom.alignment = wyr_centrum
+                ws.row_dimensions[r].outlineLevel = 1
+                ws.row_dimensions[r].hidden = not rozwiniety
+
+            for c in range(1, ostatnia_kolumna + 1):
+                kom = ws.cell(row=suma_r, column=c)
+                kom.fill = PatternFill("solid", fgColor="dcfce7")
+                kom.font = Font(bold=True, color="14532d")
+                kom.border = Border(top=Side(style="medium", color="16a34a"))
+            ws.cell(row=suma_r, column=1).alignment = Alignment(horizontal="left", vertical="center")
+
+        try:
+            ws.sheet_properties.outlinePr.summaryBelow = True
+        except Exception:
+            pass
+        ws.freeze_panes = f"B{self.NAGLOWEK_OBC + 1}"
+
+    def mapuj_kolumny_obecnosci(self, ws):
+        """Zwraca dict: nazwa(lower) -> (od_col, do_col, sekcja, nazwa_oryginalna), skanując nagłówek."""
+        mapa = {}
+        col = 2
+        while True:
+            nazwa = ws.cell(row=2, column=col).value
+            if not nazwa: break
+            sekcja = (ws.cell(row=1, column=col).value or "bar")
+            mapa[str(nazwa).strip().lower()] = (col, col + 1, str(sekcja).strip().lower(), str(nazwa).strip())
+            col += 2
+        return mapa
+
+    def dodaj_kolumne_pracownika_obecnosci(self, ws, rok, nazwa, sekcja):
+        col = 2
+        while ws.cell(row=2, column=col).value:
+            col += 2
+        od_col, do_col = col, col + 1
+        od_l, do_l = openpyxl.utils.get_column_letter(od_col), openpyxl.utils.get_column_letter(do_col)
+
+        ws.merge_cells(start_row=1, start_column=od_col, end_row=1, end_column=do_col)
+        ws.cell(row=1, column=od_col, value=sekcja)
+        ws.merge_cells(start_row=2, start_column=od_col, end_row=2, end_column=do_col)
+        ws.cell(row=2, column=od_col, value=nazwa)
+        ws.cell(row=3, column=od_col, value="od")
+        ws.cell(row=3, column=do_col, value="do")
+
+        for m in range(1, 13):
+            suma_r = self.wiersz_suma_miesiaca(rok, m)
+            pierwszy = self.wiersz_obecnosci(rok, m, 1)
+            ostatni = self.wiersz_obecnosci(rok, m, self.dni_w_miesiacu(rok, m))
+            ws.merge_cells(start_row=suma_r, start_column=od_col, end_row=suma_r, end_column=do_col)
+            ws.cell(row=suma_r, column=od_col,
+                    value=f"=SUM({do_l}{pierwszy}:{do_l}{ostatni})-SUM({od_l}{pierwszy}:{od_l}{ostatni})")
+        return od_col, do_col
+
+    def buduj_zakladke_obecnosci(self):
+        now = datetime.now()
+        _zw_top, frame_top = self.zrob_karte(self.tab_obecnosci, self.txt_wybor_daty_obc)
+        _zw_top.pack(fill="x", padx=20, pady=10)
+
+        etyk_font = (self.czcionka_nazwa, 10)
+        pole_font = (self.czcionka_nazwa, 11)
+        tk.Label(frame_top, text="Rok:", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=0, padx=(0, 6), pady=8)
+        self.obc_rok_var = tk.StringVar(value=now.strftime("%Y")); tk.Entry(frame_top, textvariable=self.obc_rok_var, width=5, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=1, ipady=4, padx=(0, 16))
+
+        tk.Label(frame_top, text="Msc (01-12):", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=2, padx=(0, 6))
+        self.obc_miesiac_var = tk.StringVar(value=now.strftime("%m")); tk.Entry(frame_top, textvariable=self.obc_miesiac_var, width=4, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=3, ipady=4, padx=(0, 16))
+
+        tk.Label(frame_top, text="Dzień:", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=4, padx=(0, 6))
+        self.obc_dzien_var = tk.StringVar(value=now.strftime("%d")); tk.Entry(frame_top, textvariable=self.obc_dzien_var, width=4, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=5, ipady=4, padx=(0, 20))
+
+        self.pill(frame_top, text=self.txt_wczytaj_obc_btn, command=self.wczytaj_dzien_obecnosci, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=6, ipady=4)
+        self.pill(frame_top, text=self.txt_wyczysc_obc_btn, command=self.wyczysc_obecnosci, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
+        self.pill(frame_top, text="Odśwież wygląd", command=self.odswiez_wyglad_obecnosci, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=8, padx=6, ipady=4)
+
+        # Jakub: "niech bedzie opcja z listy rozwijanej czy edycja czy
+        # usuniecie" - poprzednio jedynym sposobem na poprawienie bledu
+        # (zdublowane wpisy / zle przypisana osoba po przypadkowym scrollu
+        # w Combobox - patrz _blokuj_scroll_na_combo) bylo recznie
+        # wyedytowac wiersze po "Wczytaj Dzien" i zapisac ponownie. Ten
+        # dropdown + przycisk "Wykonaj" daje wprost druga opcje: wyczyscic
+        # caly dzien od zera (usun_dzien_obecnosci), gdy latwiej zaczac od
+        # nowa niz recznie rozplatywac duplikaty.
+        self.obc_akcja_var = tk.StringVar(value="Edytuj dzień")
+        obc_akcja_cb = ttk.Combobox(frame_top, textvariable=self.obc_akcja_var, values=["Edytuj dzień", "Usuń dzień"], width=12, state="readonly")
+        obc_akcja_cb.grid(row=0, column=9, padx=6, ipady=4)
+        self._blokuj_scroll_na_combo(obc_akcja_cb)
+        self.pill(frame_top, text="Wykonaj", command=self.wykonaj_akcje_obecnosci, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=10, padx=6, ipady=4)
+
+        self._zw_obc, self.frame_obecnosci = self.zrob_karte(self.tab_obecnosci, self.txt_godziny_naglowek)
+        self._zw_obc.pack(fill="both", expand=True, padx=20, pady=10)
+
+        nags = ["Pracownik", "Sekcja", "Od", "Do", "Godziny"]
+        for i, n in enumerate(nags):
+            tk.Label(self.frame_obecnosci, text=n, font=(self.czcionka_nazwa, 9, "bold"), bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=i, padx=8, pady=(0, 10), sticky="w")
+
+        self.wiersze_obecnosci = []
+
+        fb = tk.Frame(self.tab_obecnosci, bg=self.kolor_tla); fb.pack(fill="x", padx=20, pady=(4, 0))
+        self.pill(fb, text=self.txt_dodaj_obc_btn, command=self.dodaj_wiersz_obecnosci, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).pack(side=tk.LEFT, padx=(0, 8), ipady=4)
+        self.pill(fb, text=self.txt_usun_wiersz_btn, command=self.usun_wiersz_obecnosci, bg="#fee2e2", fg="#991b1b", relief="flat", cursor="hand2").pack(side=tk.LEFT, ipady=4)
+
+        bf = tk.Frame(self.tab_obecnosci, bg=self.kolor_tla); bf.pack(fill="x", padx=20, pady=20)
+        self.btn_zapisz_obecnosci = self.pill(bf, text=self.txt_zapisz_obc_btn, command=self.zapisz_dzien_obecnosci, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 13, "bold"), height=2)
+        self.btn_zapisz_obecnosci.pack(fill="x")
+
+        self.dodaj_wiersz_obecnosci()
+        self.dodaj_wiersz_obecnosci()
+
+        # ---- Podsumowanie miesiaca (zywe dane z bazy KOS) + eksport plikow ----
+        _zw_pods, frame_pods = self.zrob_karte(self.tab_obecnosci, "Podsumowanie miesiąca (z bazy KOS)")
+        _zw_pods.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        wiersz_pods = tk.Frame(frame_pods, bg=self.karta_bg)
+        wiersz_pods.pack(fill="x", pady=(0, 10))
+
+        tk.Label(wiersz_pods, text="Pracownik:", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=0, padx=(0, 6))
+        self.pods_pracownik_var = tk.StringVar(value="")
+        self.pods_pracownik_cb = ttk.Combobox(wiersz_pods, textvariable=self.pods_pracownik_var, values=getattr(self, "lista_kelnerow_raport", []), width=22)
+        self.pods_pracownik_cb.grid(row=0, column=1, padx=(0, 16), ipady=2)
+        self._blokuj_scroll_na_combo(self.pods_pracownik_cb)
+
+        tk.Label(wiersz_pods, text="Rok:", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=2, padx=(0, 6))
+        self.pods_rok_var = tk.StringVar(value=now.strftime("%Y"))
+        tk.Entry(wiersz_pods, textvariable=self.pods_rok_var, width=5, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=3, ipady=4, padx=(0, 16))
+
+        tk.Label(wiersz_pods, text="Msc (01-12):", font=etyk_font, bg=self.karta_bg, fg=self.tekst_muted).grid(row=0, column=4, padx=(0, 6))
+        self.pods_miesiac_var = tk.StringVar(value=now.strftime("%m"))
+        tk.Entry(wiersz_pods, textvariable=self.pods_miesiac_var, width=4, font=pole_font, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border).grid(row=0, column=5, ipady=4, padx=(0, 16))
+
+        self.pill(wiersz_pods, text="Pokaż", command=self.pokaz_podsumowanie_miesiaca_kos, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", cursor="hand2", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=(0, 6), ipady=4)
+        self.pill(wiersz_pods, text="Pokaż wszystkich", command=self.pokaz_wszystkie_obecnosci_miesiaca, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=7, padx=6, ipady=4)
+        self.pill(wiersz_pods, text="Eksportuj pliki miesiąca", command=self.eksportuj_pliki_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", cursor="hand2").grid(row=0, column=8, padx=6, ipady=4)
+
+        # Wlasny suwak (pionowy + poziomy, bo wrap="none") dla tego pola -
+        # wczesniej trzeba bylo przewijac cala zakladke (albo nie dalo sie
+        # wgl), zeby zobaczyc dalsza/szersza czesc podsumowania (Text o
+        # stalej wysokosci 12 linii, bez wlasnego suwaka).
+        ramka_pods_txt = tk.Frame(frame_pods, bg=self.karta_bg)
+        ramka_pods_txt.pack(fill="both", expand=True)
+        ramka_pods_txt.grid_rowconfigure(0, weight=1)
+        ramka_pods_txt.grid_columnconfigure(0, weight=1)
+
+        self.txt_podsumowanie_godzin = tk.Text(ramka_pods_txt, height=12, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, font=("Courier New", 10), wrap="none")
+        self.txt_podsumowanie_godzin.grid(row=0, column=0, sticky="nsew")
+
+        suwak_pods_y = ttk.Scrollbar(ramka_pods_txt, orient="vertical", command=self.txt_podsumowanie_godzin.yview)
+        suwak_pods_y.grid(row=0, column=1, sticky="ns")
+        suwak_pods_x = ttk.Scrollbar(ramka_pods_txt, orient="horizontal", command=self.txt_podsumowanie_godzin.xview)
+        suwak_pods_x.grid(row=1, column=0, sticky="ew")
+        self.txt_podsumowanie_godzin.configure(yscrollcommand=suwak_pods_y.set, xscrollcommand=suwak_pods_x.set)
+
+        self.txt_podsumowanie_godzin.insert("1.0", "Wybierz pracownika, rok i miesiąc, a potem kliknij „Pokaż”.")
+        self.txt_podsumowanie_godzin.config(state="disabled")
+
+    def dodaj_wiersz_obecnosci(self, domyslny_pracownik=None, domyslna_sekcja="bar", domyslny_od="", domyslny_do=""):
+        idx = len(self.wiersze_obecnosci) + 1
+
+        cb = ttk.Combobox(self.frame_obecnosci, values=self.lista_kelnerow, width=16)
+        if domyslny_pracownik: cb.set(domyslny_pracownik)
+        cb.grid(row=idx, column=0, padx=8, pady=6, sticky="w")
+        self._blokuj_scroll_na_combo(cb)
+        cb.bind('<KeyRelease>', lambda e, c=cb: self.autocomplete_pracownik(e, c))
+
+        # Sekcja (bar/kuchnia/admin) nie jest juz wybierana recznie - wynika
+        # automatycznie z przypisania pracownika w KOS (Grafik pracy na
+        # stronie, patrz self.sekcja_kos_map / odswiez_liste_pracownikow),
+        # z zapasowym spadkiem na lokalna tabelke "Funkcje pracownikow" w
+        # Ustawieniach (jest_kuchnia/jest_bar/jest_admin), gdy kogos nie ma na
+        # liscie z KOS. Pole zostaje jako wyszarzony podglad, bo dalej w
+        # kodzie (zapis do KOS, podzial napiwkow) nadal korzysta z tej
+        # wartosci. "admin" wyklucza dana osobe z podzialu serwisu/napiwkow i
+        # z listy raportow zmianowych (Rozliczenie Dnia).
+        sekcja_cb = ttk.Combobox(self.frame_obecnosci, values=["bar", "kuchnia", "admin"], width=8, state="disabled")
+        sekcja_cb.set(domyslna_sekcja); sekcja_cb.grid(row=idx, column=1, padx=8, pady=6)
+
+        def _auto_sekcja(event=None, c=cb, sc=sekcja_cb):
+            _, nazwa = self._rozbij_nr_nazwe(c.get())
+            nazwa = nazwa.strip()
+            if not nazwa:
+                return
+            nowa = getattr(self, "sekcja_kos_map", {}).get(nazwa.lower())
+            if nowa not in ("bar", "kuchnia", "admin"):
+                if self.jest_kuchnia(nazwa):
+                    nowa = "kuchnia"
+                elif self.jest_bar(nazwa):
+                    nowa = "bar"
+                elif self.jest_admin(nazwa):
+                    nowa = "admin"
+                else:
+                    return  # nieznana rola - zostaw domyslna/wczytana wartosc
+            sc.config(state="normal"); sc.set(nowa); sc.config(state="disabled")
+
+        cb.bind("<<ComboboxSelected>>", _auto_sekcja)
+        cb.bind("<FocusOut>", _auto_sekcja)
+
+        od_e = tk.Entry(self.frame_obecnosci, width=8, font=(self.czcionka_nazwa, 11), bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border); od_e.insert(0, domyslny_od); od_e.grid(row=idx, column=2, padx=8, pady=6, ipady=3)
+        do_e = tk.Entry(self.frame_obecnosci, width=8, font=(self.czcionka_nazwa, 11), bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border); do_e.insert(0, domyslny_do); do_e.grid(row=idx, column=3, padx=8, pady=6, ipady=3)
+        lbl_g = tk.Label(self.frame_obecnosci, text="---", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki, width=8)
+        lbl_g.grid(row=idx, column=4, padx=8, pady=6)
+
+        def przelicz(event, oe=od_e, de=do_e, lg=lbl_g):
+            o = self.godz_na_dziesietna(oe.get()); d = self.godz_na_dziesietna(de.get())
+            lg.config(text=f"{(d - o):.2f}" if (o is not None and d is not None) else "---")
+
+        od_e.bind("<FocusOut>", przelicz); do_e.bind("<FocusOut>", przelicz)
+        self.wiersze_obecnosci.append((cb, sekcja_cb, od_e, do_e, lbl_g))
+        if domyslny_od and domyslny_do:
+            przelicz(None)
+
+    def usun_wiersz_obecnosci(self):
+        if self.wiersze_obecnosci:
+            for w in self.wiersze_obecnosci.pop():
+                w.destroy()
+
+    def wyczysc_obecnosci(self):
+        while self.wiersze_obecnosci: self.usun_wiersz_obecnosci()
+        self.dodaj_wiersz_obecnosci(); self.dodaj_wiersz_obecnosci()
+
+    def odswiez_wyglad_obecnosci(self):
+        """Odświeża kolorowy wygląd pliku Obecności i grupowanie miesięcy (rozwija
+        tylko bieżący miesiąc kalendarzowy) - przydatne do 'upiększenia' starszego
+        pliku bez kolorów oraz do zwinięcia z powrotem miesięcy ręcznie rozwiniętych w Excelu."""
+        rok = self.obc_rok_var.get() if hasattr(self, 'obc_rok_var') else datetime.now().strftime("%Y")
+        plik = self.get_plik_obecnosci_rok(rok)
+        if not os.path.exists(plik):
+            self.utworz_plik_obecnosci(rok)
+            return messagebox.showinfo("Wygląd", "Utworzono nowy, kolorowy plik obecności.")
+        try:
+            wb = openpyxl.load_workbook(plik)
+            ws = wb.active
+            self._style_obecnosci(ws, rok)
+            wb.save(plik)
+            wb.close()
+            messagebox.showinfo("Wygląd", "Odświeżono wygląd pliku obecności. Rozwinięty jest bieżący miesiąc.")
+        except Exception as e:
+            messagebox.showerror("Błąd", str(e))
+
+    def _pobierz_serwis_wg_dnia_kos(self, rok, miesiac, access_token):
+        """Pomocnicze dla pokaz_podsumowanie_miesiaca_kos /
+        pokaz_wszystkie_obecnosci_miesiaca: pobiera serwis zapisany w
+        Rozliczeniu Dnia (zakladka "Rozliczenie Dnia", zapisywana przez
+        zapisz_dzien - GET /api/freyonator/dzien-rozliczenia) dla calego
+        miesiaca i zwraca go jako slownik {(data, pracownik_male_litery):
+        serwis}, zeby mozna go bylo dopasowac do wierszy Obecnosci po
+        (data, pracownik) - oba endpointy zapisuja "pracownik" jako to samo,
+        czyste imie (bez numeru z przodu), patrz zapisz_dzien_obecnosci /
+        zapisz_dzien. W razie bledu (np. brak polaczenia, albo jeszcze nic
+        nie zapisano w Rozliczeniu Dnia tego miesiaca) zwraca pusty slownik
+        po cichu - widok godzin z Obecnosci ma dzialac tak samo jak wczesniej
+        nawet gdy Rozliczenie Dnia nie jest (jeszcze) zapisane."""
+        try:
+            status_r, dane_r = self._kos_http(
+                "GET", f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia?rok={rok}&miesiac={miesiac}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        except Exception:
+            return {}
+        if status_r != 200 or not isinstance(dane_r, dict):
+            return {}
+        wynik = {}
+        for p in (dane_r.get("pracownicy") or []):
+            nazwa = str(p.get("pracownik") or "").strip().lower()
+            data_str = str(p.get("data") or "").strip()
+            if not nazwa or not data_str:
+                continue
+            wynik[(data_str, nazwa)] = self.bezpieczny_float(p.get("serwis"))
+        return wynik
+
+    def pokaz_podsumowanie_miesiaca_kos(self):
+        """Dzien-po-dniu podsumowanie godzin pracy (i serwisu z Rozliczenia
+        Dnia, jesli zostal tam zapisany - patrz _pobierz_serwis_wg_dnia_kos)
+        wybranego pracownika w wybranym miesiacu, czytane na zywo z bazy KOS
+        (nie z lokalnego Excela - patrz komentarz w wczytaj_dzien_obecnosci)
+        - zakres calego miesiaca zwraca endpoint
+        GET /api/freyonator/obecnosci?rok=..&miesiac=.. (bez dzien). Gdy dla
+        danego dnia nikt jeszcze nie zapisal Rozliczenia (wiec serwis nie
+        jest znany), pokazuje sie "—" zamiast kwoty - nigdy 0 zl, zeby nie
+        sugerowac falszywie, ze serwis tego dnia wyniosl zero."""
+        import calendar
+        pracownik = (self.pods_pracownik_var.get() or "").strip()
+        if not pracownik:
+            return messagebox.showerror("Błąd", "Wybierz pracownika.")
+        try:
+            rok = int(self.pods_rok_var.get()); miesiac = int(self.pods_miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status, dane = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/obecnosci?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się wczytać podsumowania miesiąca z KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd wczytywania", tresc)
+
+        serwis_wg_dnia = self._pobierz_serwis_wg_dnia_kos(rok, miesiac, access_token)
+
+        wszystkie = dane.get("pracownicy") if isinstance(dane, dict) else []
+        wiersze = [w for w in (wszystkie or []) if str(w.get("pracownik", "")).strip().lower() == pracownik.lower()]
+
+        dni_tyg = ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Niedz"]
+        miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1] if 1 <= miesiac <= 12 else str(miesiac)
+        linie = [f"GODZINY PRACY — {pracownik} — {miesiac_nazwa} {rok}", ""]
+        if not wiersze:
+            linie.append("Brak zapisanych godzin w tym miesiącu dla tego pracownika.")
+        else:
+            suma = 0.0
+            suma_serwis = 0.0
+            for w in sorted(wiersze, key=lambda x: x.get("data") or ""):
+                data_str = w.get("data") or ""
+                try:
+                    rr, mm, dd = data_str.split("-")
+                    etykieta_dnia = f"{dd}.{mm} ({dni_tyg[calendar.weekday(int(rr), int(mm), int(dd))]})"
+                except Exception:
+                    etykieta_dnia = data_str
+                godz_od = self.dziesietna_na_godz(w.get("godz_od")) or "--:--"
+                godz_do = self.dziesietna_na_godz(w.get("godz_do")) or "--:--"
+                godziny = w.get("godziny") or 0.0
+                suma += godziny
+                serwis = serwis_wg_dnia.get((data_str, pracownik.lower()))
+                if serwis is not None:
+                    suma_serwis += serwis
+                    serwis_txt = f"{serwis:.2f} zł"
+                else:
+                    serwis_txt = "—"
+                linie.append(f"  {etykieta_dnia:<14} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})   Serwis: {serwis_txt}")
+            linie.append("")
+            linie.append(f"RAZEM: {suma:.2f}h   •   SUMA SERWIS: {suma_serwis:.2f} zł")
+
+        self.txt_podsumowanie_godzin.config(state="normal")
+        self.txt_podsumowanie_godzin.delete("1.0", tk.END)
+        self.txt_podsumowanie_godzin.insert("1.0", "\n".join(linie))
+        self.txt_podsumowanie_godzin.config(state="disabled")
+
+    def pokaz_wszystkie_obecnosci_miesiaca(self):
+        """Podglad WSZYSTKICH pracownikow w wybranym miesiacu na zywo z bazy
+        KOS, dzien po dniu - w odroznieniu od pokaz_podsumowanie_miesiaca_kos
+        (ktore pokazuje tylko jednego, wybranego w polu "Pracownik" czlowieka).
+        Uzywa tego samego endpointu (bez filtrowania po pracowniku), plus
+        serwisu z Rozliczenia Dnia (patrz _pobierz_serwis_wg_dnia_kos)."""
+        import calendar
+        try:
+            rok = int(self.pods_rok_var.get()); miesiac = int(self.pods_miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status, dane = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/obecnosci?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się wczytać podsumowania miesiąca z KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd wczytywania", tresc)
+
+        serwis_wg_dnia = self._pobierz_serwis_wg_dnia_kos(rok, miesiac, access_token)
+
+        wszystkie = dane.get("pracownicy") if isinstance(dane, dict) else []
+        dni_tyg = ["Pon", "Wt", "Śr", "Czw", "Pt", "Sob", "Niedz"]
+        miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1] if 1 <= miesiac <= 12 else str(miesiac)
+
+        wg_dnia = {}
+        for w in (wszystkie or []):
+            data_str = w.get("data") or ""
+            wg_dnia.setdefault(data_str, []).append(w)
+
+        linie = [f"OBECNOŚCI — WSZYSCY — {miesiac_nazwa} {rok}", ""]
+        if not wg_dnia:
+            linie.append("Brak zapisanych obecności w tym miesiącu.")
+        else:
+            suma_wszystkich = 0.0
+            suma_serwis_wszystkich = 0.0
+            for data_str in sorted(wg_dnia.keys()):
+                try:
+                    rr, mm, dd = data_str.split("-")
+                    etykieta_dnia = f"{dd}.{mm} ({dni_tyg[calendar.weekday(int(rr), int(mm), int(dd))]})"
+                except Exception:
+                    etykieta_dnia = data_str
+                linie.append(etykieta_dnia + ":")
+                suma_dnia = 0.0
+                suma_serwis_dnia = 0.0
+                for w in sorted(wg_dnia[data_str], key=lambda x: (x.get("pracownik") or "")):
+                    godz_od = self.dziesietna_na_godz(w.get("godz_od")) or "--:--"
+                    godz_do = self.dziesietna_na_godz(w.get("godz_do")) or "--:--"
+                    godziny = w.get("godziny") or 0.0
+                    suma_dnia += godziny
+                    suma_wszystkich += godziny
+                    nazwa_pr = str(w.get("pracownik", ""))[:22]
+                    serwis = serwis_wg_dnia.get((data_str, str(w.get("pracownik", "")).strip().lower()))
+                    if serwis is not None:
+                        suma_serwis_dnia += serwis
+                        suma_serwis_wszystkich += serwis
+                        serwis_txt = f"{serwis:.2f} zł"
+                    else:
+                        serwis_txt = "—"
+                    linie.append(f"    {nazwa_pr:<22} {godz_od}–{godz_do}  = {godziny:.2f}h   ({w.get('sekcja', '')})   Serwis: {serwis_txt}")
+                linie.append(f"    razem dnia: {suma_dnia:.2f}h   •   serwis dnia: {suma_serwis_dnia:.2f} zł")
+                linie.append("")
+            linie.append(f"RAZEM MIESIĄC (wszyscy): {suma_wszystkich:.2f}h   •   SUMA SERWIS (wszyscy): {suma_serwis_wszystkich:.2f} zł")
+
+        self.txt_podsumowanie_godzin.config(state="normal")
+        self.txt_podsumowanie_godzin.delete("1.0", tk.END)
+        self.txt_podsumowanie_godzin.insert("1.0", "\n".join(linie))
+        self.txt_podsumowanie_godzin.config(state="disabled")
+
+    def eksportuj_pliki_miesiaca_kos(self):
+        """Eksportuje swiezy plik Obecnosci (w tym samym, kolorowym formacie
+        co bazowy Obecnosci_<rok>.xlsx) oraz plik Rozliczenia miesiaca - oba
+        budowane na zywo z danych w bazie KOS, bo od migracji na Faze 1/2
+        lokalne pliki Obecnosci_<rok>.xlsx / Rozliczenie_<miesiac>.xlsx juz
+        nie sa przez aplikacje uzywane (patrz komentarze w
+        wczytaj_dzien_obecnosci / wczytaj_dzien) - eksport NIE kopiuje tych
+        martwych plikow, tylko odtwarza ten sam wyglad ze zrodla danych,
+        ktorym faktycznie teraz jest KOS."""
