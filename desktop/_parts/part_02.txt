@@ -1,0 +1,690 @@
+            self.root.iconphoto(True, self._ikona_okna_img)
+        except Exception:
+            pass
+
+    def _buduj_naglowek_marki(self):
+        """Pasek na gorze okna z logo KOS i nazwa programu - nowoczesny, granatowy
+        styl spojny ze strona kos-kawiarniaos.vercel.app."""
+        naglowek = tk.Frame(self.root, bg=self.kolor_header_bg, height=64)
+        naglowek.pack(fill="x", side="top")
+        naglowek.pack_propagate(False)
+
+        wnetrze = tk.Frame(naglowek, bg=self.kolor_header_bg)
+        wnetrze.pack(side="left", padx=18, pady=10)
+
+        try:
+            self._logo_naglowka_img = tk.PhotoImage(file=self._ikona_sciezka("kos-logo-header.png"))
+            tk.Label(wnetrze, image=self._logo_naglowka_img, bg=self.kolor_header_bg).pack(side="left", padx=(0, 12))
+        except Exception:
+            pass
+
+        tekst = tk.Frame(wnetrze, bg=self.kolor_header_bg)
+        tekst.pack(side="left")
+        tk.Label(tekst, text=self.nazwa_programu, font=(self.czcionka_nazwa, 15, "bold"),
+                 bg=self.kolor_header_bg, fg=self.kolor_bialy).pack(anchor="w")
+        tk.Label(tekst, text="Rozliczenia dnia i grafik pracy", font=(self.czcionka_nazwa, 9),
+                 bg=self.kolor_header_bg, fg=self.kolor_header_muted).pack(anchor="w")
+
+    def buduj_gui(self):
+        # Kolejnosc zakladek = kolejnosc, w jakiej realnie potrzebne sa dane:
+        # 1) Obecnosci (godziny pracy - wejsciowe dla kalkulatorow napiwkow)
+        # 2) Rozliczenie Dnia (utargi kelnerow, korzysta z godzin z Obecnosci)
+        # 3) Kalkulator Napiwkow Gotowki (pomocniczy, korzysta z Obecnosci + dnia z Rozliczenia)
+        # 4) Podsumowanie Miesiaca (odczyt juz zapisanych danych)
+        # 5) Ustawienia (konfiguracja, zmieniana najrzadziej)
+        self._buduj_naglowek_marki()
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TNotebook", background=self.kolor_tla, borderwidth=0)
+
+        # Oble (zaokraglone) zakladki: ttk nie ma natywnego border-radius, wiec
+        # rysujemy 3 malutkie kafelki PNG (gora zaokraglona, dol prosty) i uzywamy
+        # ich jako 9-slice "image" elementu stylu - rogi zostaja ostre px-w-px,
+        # a srodek rozciaga sie do szerokosci tekstu zakladki. Zadnej zaleznosci
+        # od Pillow w runtime - PNG wpisane na sztywno jako base64.
+        _tab_png_normal = (
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAsCAYAAADVX77/AAAAvElEQVR4nO2UsRGFIBAFD4owtQv7"
+            "j+3C1CY00mEQQaIdubehEuxb+T9YB9O8HD3nKfZtDV/PNg/+ZfQbrRix9vLv483aG4p1RhheonQb"
+            "Hjdg1PFm5W2xdWA08o3V/wAP3AE8fP2LdGvMH3jh2qyfAC1AEzxe/xT3N0ABaAEaBaAFaBSAFqBR"
+            "AFqARgFoARoFoAVoFIAWoFEAWoBGAWgBGgWgBWgUgBagUQBagEYBaAEaBaAFaBSAFqBxH+AEmKsb"
+            "47ZlBPcAAAAASUVORK5CYII="
+        )
+        _tab_png_active = (
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAsCAYAAADVX77/AAAAu0lEQVR4nO2UsRGFIBAFD1oxtxrL"
+            "tBpza9FIh0EEiXbk3oZKsG/l/2AdTPNy9Jyn2Lc1fD3bPPiX0W+0YsTay7+PN2tvKNYZYXiJ0m14"
+            "3IBRx5uVt8XWgdHIN1b/AzxwB/Dw9S/SrTF/4IVrs34CtABN8Hj9U9zfAAWgBWgUgBagUQBagEYB"
+            "aAEaBaAFaBSAFqBRAFqARgFoARoFoAVoFIAWoFEAWoBGAWgBGgWgBWgUgBagUQBagMZ9gBO+7x5h"
+            "lKz5CAAAAABJRU5ErkJggg=="
+        )
+        _tab_png_selected = (
+            "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAsCAYAAADVX77/AAAAuElEQVR4nO2UwQ2FIBAFF/qwPKuy"
+            "PAvRi0aCCHKawL45Gn4yb+QbrId9O7rOUyxr+Hu0fXCU0V80YsTqj0cfb9bcUK4zw/AShdvwvgGz"
+            "jjcrboutA9ORbax/AxzwBPDw9m+SrTF/4IZrs/4CtABNcHn9E9zfAAWgBWgUgBagUQBagEYBaAEa"
+            "BaAFaBSAFqBRAFqARgFoARoFoAVoFIAWoFEAWoBGAWgBGgWgBWgUgBagUQBagMZ9gBPWRiS0Gz1A"
+            "ZAAAAABJRU5ErkJggg=="
+        )
+        try:
+            self._tab_img_normal = tk.PhotoImage(data=_tab_png_normal, format="png")
+            self._tab_img_active = tk.PhotoImage(data=_tab_png_active, format="png")
+            self._tab_img_selected = tk.PhotoImage(data=_tab_png_selected, format="png")
+            style.element_create(
+                "Obly.tab", "image", self._tab_img_normal,
+                ("selected", self._tab_img_selected),
+                ("active", "!selected", self._tab_img_active),
+                border=14, sticky="nsew",
+            )
+            style.layout("TNotebook.Tab", [
+                ("Obly.tab", {"sticky": "nsew", "children": [
+                    ("Notebook.padding", {"side": "top", "sticky": "nsew", "children": [
+                        ("Notebook.label", {"side": "top", "sticky": ""}),
+                    ]}),
+                ]}),
+            ])
+        except tk.TclError:
+            pass
+        style.configure("TNotebook.Tab", padding=(22, 13), font=(self.czcionka_nazwa, 10, "bold"),
+                         foreground=self.tekst_muted, focuscolor=self.kolor_tla, borderwidth=0)
+        style.map("TNotebook.Tab",
+                  foreground=[("selected", self.kolor_header_bg), ("active", "#F5F7FA")])
+        style.configure("Vertical.TScrollbar", background="#3A4A6B", troughcolor=self.kolor_tla, borderwidth=0, arrowsize=14)
+        style.configure("TCombobox", fieldbackground=self.kolor_bialy, background=self.kolor_bialy, foreground="#10182B",
+                         padding=6, font=(self.czcionka_nazwa, 10), bordercolor=self.karta_border, relief="flat")
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", self.kolor_bialy)],
+                  foreground=[("readonly", "#10182B")],
+                  bordercolor=[("focus", self.kolor_akcent)])
+        
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=20, pady=16)
+        self.notebook.bind("<<NotebookTabChanged>>", self.sprawdz_dostep)
+
+        # ---- 1) Obecnosci ----
+        self.tab_obecnosci_outer = tk.Frame(self.notebook, bg=self.kolor_tla)
+        self.notebook.add(self.tab_obecnosci_outer, text="1. Obecności")
+
+        self.canvas_obc = tk.Canvas(self.tab_obecnosci_outer, bg=self.kolor_tla, highlightthickness=0)
+        self.scrollbar_obc = ttk.Scrollbar(self.tab_obecnosci_outer, orient="vertical", command=self.canvas_obc.yview)
+
+        self.tab_obecnosci = tk.Frame(self.canvas_obc, bg=self.kolor_tla)
+        self.tab_obecnosci.bind("<Configure>", lambda e: self.canvas_obc.configure(scrollregion=self.canvas_obc.bbox("all")))
+
+        self.canvas_obc.create_window((0, 0), window=self.tab_obecnosci, anchor="nw")
+        self.canvas_obc.configure(yscrollcommand=self.scrollbar_obc.set)
+
+        self.canvas_obc.pack(side="left", fill="both", expand=True)
+        self.scrollbar_obc.pack(side="right", fill="y")
+
+        self.tab_obecnosci_outer.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # ---- 2) Rozliczenie Dnia ----
+        self.tab_rozliczenie_outer = tk.Frame(self.notebook, bg=self.kolor_tla)
+        self.notebook.add(self.tab_rozliczenie_outer, text="2. Rozliczenie Dnia")
+        
+        self.canvas = tk.Canvas(self.tab_rozliczenie_outer, bg=self.kolor_tla, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.tab_rozliczenie_outer, orient="vertical", command=self.canvas.yview)
+        
+        self.tab_rozliczenie = tk.Frame(self.canvas, bg=self.kolor_tla)
+        self.tab_rozliczenie.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.tab_rozliczenie, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+
+        # Kalkulator Napiwkow Gotowki byl osobna zakladka - przy zbyt wielu
+        # zakladkach nazwy nie mieszczily sie w oknie i byly obcinane, wiec
+        # dolaczony jest teraz jako kolejna karta na dole zakladki "2.
+        # Rozliczenie Dnia" (patrz buduj_zakladke_kalkulator_gotowka) -
+        # tab_kalkulator_gotowka = tab_rozliczenie, bez osobnej zakladki/pozycji w notebooku.
+        self.tab_kalkulator_gotowka = self.tab_rozliczenie
+
+        # ---- 3) Kasa: Wydatki i Wplaty ----
+        self.tab_kasa_outer = tk.Frame(self.notebook, bg=self.kolor_tla)
+        self.notebook.add(self.tab_kasa_outer, text="3. Paragony z nipem")
+
+        self.canvas_kasa = tk.Canvas(self.tab_kasa_outer, bg=self.kolor_tla, highlightthickness=0)
+        self.scrollbar_kasa = ttk.Scrollbar(self.tab_kasa_outer, orient="vertical", command=self.canvas_kasa.yview)
+
+        self.tab_kasa = tk.Frame(self.canvas_kasa, bg=self.kolor_tla)
+        self.tab_kasa.bind("<Configure>", lambda e: self.canvas_kasa.configure(scrollregion=self.canvas_kasa.bbox("all")))
+
+        self.canvas_kasa.create_window((0, 0), window=self.tab_kasa, anchor="nw")
+        self.canvas_kasa.configure(yscrollcommand=self.scrollbar_kasa.set)
+
+        self.canvas_kasa.pack(side="left", fill="both", expand=True)
+        self.scrollbar_kasa.pack(side="right", fill="y")
+
+        # ---- 4) Ustawienia ----
+        self.tab_ustawienia_outer = tk.Frame(self.notebook, bg=self.kolor_tla)
+        self.notebook.add(self.tab_ustawienia_outer, text="4. Ustawienia")
+
+        self.canvas_ust = tk.Canvas(self.tab_ustawienia_outer, bg=self.kolor_tla, highlightthickness=0)
+        self.scrollbar_ust = ttk.Scrollbar(self.tab_ustawienia_outer, orient="vertical", command=self.canvas_ust.yview)
+
+        self.tab_ustawienia = tk.Frame(self.canvas_ust, bg=self.kolor_tla)
+        self.tab_ustawienia.bind("<Configure>", lambda e: self.canvas_ust.configure(scrollregion=self.canvas_ust.bbox("all")))
+
+        self.canvas_ust.create_window((0, 0), window=self.tab_ustawienia, anchor="nw")
+        self.canvas_ust.configure(yscrollcommand=self.scrollbar_ust.set)
+
+        self.canvas_ust.pack(side="left", fill="both", expand=True)
+        self.scrollbar_ust.pack(side="right", fill="y")
+
+        self.buduj_zakladke_obecnosci()
+        self.buduj_zakladke_rozliczenie()
+        self.buduj_zakladke_kalkulator_gotowka()
+        self.buduj_zakladke_kasa()
+        self.buduj_zakladke_ustawienia()
+
+    def _kos_access_token_swiezy(self):
+        """Zwraca aktualny (odswiezony) access token do KOS, albo None gdy
+        sesja naprawde juz niewazna.
+
+        WAZNE (poprawka "co jakis czas wylogowuje"): ta metoda jest wolana
+        praktycznie z kazdej akcji w programie (wczytanie dnia, zapis
+        obecnosci, podsumowanie miesiaca...). Wczesniej KAZDE takie wywolanie
+        robilo osobne zapytanie sieciowe (odswiezenie sesji) - przy
+        najmniejszej przerwie w wifi kawiarni (timeout 8s) ta JEDNA akcja
+        dostawala None i program od razu kazal sie zalogowac ponownie, mimo
+        ze zapisana sesja wciaz byla w pelni wazna. Teraz:
+        1) cachujemy access_token na ok. 45 minut (token Supabase zyje typowo
+           60 min) - wiekszosc akcji wgl nie dotyka sieci;
+        2) jesli odswiezenie sie nie udalo z powodu BRAKU POLACZENIA (a nie
+           jawnej odmowy serwera), a mamy jeszcze stary token w pamieci,
+           oddajemy go dalej zamiast od razu kazac logowac sie ponownie -
+           jesli faktycznie jeszcze dziala, konkretne zapytanie po prostu
+           sie uda."""
+        if not self.kos_refresh_token:
+            return None
+
+        teraz = time.time()
+        if (
+            self.kos_access_token
+            and self._kos_access_token_wydany_o
+            and (teraz - self._kos_access_token_wydany_o) < 45 * 60
+        ):
+            return self.kos_access_token
+
+        sesja = self._kos_odswiez_sesje(self.kos_refresh_token)
+        status_odswiezania = self._ostatni_status_aktywacji
+
+        if sesja and sesja.get("access_token"):
+            self.kos_access_token = sesja["access_token"]
+            self._kos_access_token_wydany_o = teraz
+            nowy_refresh = sesja.get("refresh_token")
+            if nowy_refresh and nowy_refresh != self.kos_refresh_token:
+                # Supabase rotuje refresh_token przy kazdym odswiezeniu sesji - stary
+                # token przestaje dzialac od razu po wydaniu nowego. Trzeba go zapisac
+                # na dysk NATYCHMIAST (nie tylko trzymac w pamieci), inaczej po
+                # zamknieciu programu w pliku ustawien zostaje juz "zuzyty" (stary)
+                # refresh_token, serwer go odrzuca przy nastepnym starcie i program
+                # za kazdym razem prosi o ponowne logowanie.
+                self.kos_refresh_token = nowy_refresh
+                self._zapisz_json_ustawien()
+            return self.kos_access_token
+
+        if status_odswiezania is None and self.kos_access_token:
+            # Brak polaczenia z serwerem WGL (nie: jawna odmowa z kodem HTTP) -
+            # a mamy stary token w pamieci. Nie kasujemy sesji na tej
+            # podstawie - patrz komentarz w docstringu.
+            return self.kos_access_token
+
+        return None
+
+    def buduj_zakladke_ustawienia(self):
+        KARTA_BG = self.karta_bg
+
+        tk.Label(self.tab_ustawienia, text="Ustawienia", font=(self.czcionka_nazwa, 20, "bold"),
+                 bg=self.kolor_tla, fg=self.kolor_czcionki).pack(pady=(16, 2), padx=16, anchor="w")
+        tk.Label(self.tab_ustawienia, text="Zmiany zaczną obowiązywać po kliknięciu „Zapisz i Odśwież” na samym dole.",
+                 font=(self.czcionka_nazwa, 10), bg=self.kolor_tla, fg=self.tekst_muted).pack(pady=(0, 14), padx=16, anchor="w")
+
+        def karta(tytul, opis=None):
+            _zw, f = self.zrob_karte(self.tab_ustawienia, tytul)
+            _zw.pack(fill="x", padx=16, pady=8)
+            if opis:
+                tk.Label(f, text=opis, font=(self.czcionka_nazwa, 9), bg=KARTA_BG, fg=self.tekst_muted,
+                         wraplength=820, justify="left").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+            return f
+
+        def pole(parent, wiersz, etykieta, wartosc_pocz, kolumna=0, szer=28, haslo=False):
+            tk.Label(parent, text=etykieta, font=(self.czcionka_nazwa, 10), bg=KARTA_BG, fg=self.kolor_czcionki)\
+                .grid(row=wiersz, column=kolumna, padx=(0, 8), pady=5, sticky="e")
+            var = tk.StringVar(value=wartosc_pocz)
+            e = tk.Entry(parent, textvariable=var, width=szer, relief="solid", bd=1, show="*" if haslo else "", bg=self.kolor_tla, fg=self.kolor_czcionki, insertbackground=self.kolor_czcionki)
+            e.grid(row=wiersz, column=kolumna + 1, padx=(0, 20), pady=5, sticky="w")
+            return var
+
+        # ---- Podstawowe ----
+        k1 = karta("Podstawowe")
+        self.nazwa_programu_var = pole(k1, 1, "Nazwa programu:", self.nazwa_programu, szer=32)
+        self.haslo_var = pole(k1, 2, "Hasło do zakładek zablokowanych:", self.haslo_dostepu, szer=32, haslo=True)
+        self.adresy_email_var = pole(k1, 3, "E-maile do raportów:", self.adresy_email, szer=32)
+        self.klucz_kuchnia_var = pole(k1, 1, "Słowo-klucz „Kuchnia”:", self.klucz_kuchnia, kolumna=2, szer=20)
+        self.klucz_bar_var = pole(k1, 2, "Słowo-klucz „Bar”:", self.klucz_bar, kolumna=2, szer=20)
+        self.pracownicy_kuchnia_var = tk.StringVar(value=self.pracownicy_kuchnia)
+        self.pracownicy_bar_var = tk.StringVar(value=self.pracownicy_bar)
+        self.pracownicy_kelner_var = tk.StringVar(value=self.pracownicy_kelner)
+        self.pracownicy_admin_var = tk.StringVar(value=self.pracownicy_admin)
+        self.wykluczeni_napiwki_var = pole(k1, 3, "Wykluczeni z napiwków (po przecinku):", self.wykluczeni_napiwki, kolumna=2, szer=20)
+        self.klucz_admin_var = pole(k1, 4, "Słowo-klucz „Admin”:", self.klucz_admin, kolumna=2, szer=20)
+
+        # ---- Konto KOS (aktywacja programu) ----
+        k1k = karta(
+            "Konto KOS",
+            opis="Program jest aktywowany logowaniem na konto KOS (kos-kawiarniaos.vercel.app) - wymaga planu Ultra. Bez kodu licencyjnego.",
+        )
+        status_kos = (
+            f"Zalogowano jako: {self.kos_login}  •  firma: {self.kos_company_nazwa or '—'}  •  plan: {self.kos_plan or '—'}"
+            if self.kos_login else "Nie zalogowano."
+        )
+        self.lbl_status_kos = tk.Label(
+            k1k, text=status_kos, font=(self.czcionka_nazwa, 10), bg=KARTA_BG, fg=self.kolor_czcionki, justify="left",
+        )
+        self.lbl_status_kos.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        self.pill(
+            k1k, text="Zmień konto KOS / wyloguj", command=self.wyloguj_kos,
+            bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold"),
+        ).grid(row=2, column=0, columnspan=4, sticky="we")
+
+        # ---- Pracownicy (lista) ----
+        # Od migracji na KOS lista pracownikow (self.lista_kelnerow) jest
+        # domyslnie czytana z shift_employees przez API - ta sama lista co w
+        # zakladce "Grafik pracy" na stronie. Dodawanie/usuwanie pracownikow
+        # tutaj (stary zapis do Excela) przestalo miec widoczny efekt, bo
+        # odswiez_liste_pracownikow() i tak nadpisuje liste danymi z KOS -
+        # zamiast zostawiac pozornie dzialajace, a w praktyce martwe
+        # przyciski, odsylamy do strony, gdzie pracownikow faktycznie sie
+        # teraz zarzadza.
+        k1b = karta(
+            "Pracownicy",
+            opis="Lista pracowników (imiona widoczne w rozliczeniu i obecnościach) pochodzi teraz z zakładki "
+                 "\"Grafik pracy\" na stronie KOS. Dodawaj/usuwaj pracowników tam - tutaj zmiana się nie zapisze.",
+        )
+        self.pill(
+            k1b, text="Zarządzaj pracownikami na stronie", command=lambda: webbrowser.open(KOS_API_URL),
+            bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold"),
+        ).grid(row=1, column=0, columnspan=4, pady=(0, 4), sticky="we")
+
+        # ---- Funkcje / role pracownikow (tabela zamiast pola "po przecinku") ----
+        k1d = karta("Funkcje pracowników",
+                    opis="Zaznacz role każdego pracownika (można wybrać kilka naraz, np. Kuchnia + Bar) — używane do podziału napiwków i przypisań w kalkulatorze.")
+        self.ramka_tabela_funkcji = tk.Frame(k1d, bg=KARTA_BG)
+        self.ramka_tabela_funkcji.grid(row=1, column=0, columnspan=4, sticky="we")
+        self._rebuduj_tabele_funkcji_pracownikow()
+
+        # ---- Pliki ----
+        k2 = karta("Pliki Excel", opis="Nazwy plików, z których korzysta program.")
+        self.szablon_var = pole(k2, 1, "Plik szablonu:", self.szablon_plik, szer=32)
+        self.format_nazwy_var = pole(k2, 2, "Plik rozliczeń (użyj {miesiac}):", self.format_nazwy_pliku, szer=32)
+        self.format_nazwy_obecnosci_var = pole(k2, 3, "Plik obecności (użyj {rok}):", self.format_nazwy_obecnosci, szer=32)
+
+        tk.Label(k2, text="Folder zapisu plików (pusty = domyślny):", font=(self.czcionka_nazwa, 10), bg=KARTA_BG, fg=self.kolor_czcionki)\
+            .grid(row=4, column=0, padx=(0, 8), pady=5, sticky="e")
+        self.folder_zapisu_var = tk.StringVar(value=self.folder_zapisu)
+        ffz = tk.Frame(k2, bg=KARTA_BG); ffz.grid(row=4, column=1, columnspan=3, sticky="w", pady=5)
+        tk.Entry(ffz, textvariable=self.folder_zapisu_var, width=48, relief="solid", bd=1, bg=self.kolor_tla, fg=self.kolor_czcionki, insertbackground=self.kolor_czcionki).pack(side=tk.LEFT)
+        def _wybierz_folder_zapisu():
+            wybrany = filedialog.askdirectory(title="Wybierz folder zapisu plików KawiarniaOS")
+            if wybrany:
+                self.folder_zapisu_var.set(wybrany)
+        self.pill(ffz, text="Wybierz folder...", command=_wybierz_folder_zapisu, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat").pack(side=tk.LEFT, padx=6)
+        self.pill(ffz, text="Domyślny", command=lambda: self.folder_zapisu_var.set(""), bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat").pack(side=tk.LEFT, padx=2)
+        tk.Label(k2, text="Domyślnie: folder programu, a jeśli plik tam nie istnieje - ~/Documents/KawiarniaOS.", font=(self.czcionka_nazwa, 8, "italic"), bg=KARTA_BG, fg=self.tekst_muted)\
+            .grid(row=5, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        # ---- Wygląd ----
+        k3 = karta("Wygląd")
+        tk.Label(k3, text="Kolor tła:", font=(self.czcionka_nazwa, 10), bg=KARTA_BG, fg=self.kolor_czcionki)\
+            .grid(row=1, column=0, sticky="e", padx=(0, 8), pady=5)
+        ft = tk.Frame(k3, bg=KARTA_BG); ft.grid(row=1, column=1, sticky="w", pady=5)
+        self.kolor_tla_var = tk.StringVar(value=self.kolor_tla)
+        self.pill(ft, text="Wybierz kolor", command=self.wybierz_kolor_tla, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg,
+                  relief="flat", padx=10).pack(side=tk.LEFT)
+        self.lbl_wybrany_kolor_tla = tk.Label(ft, text=self.kolor_tla, bg=self.kolor_tla, fg=self.kolor_czcionki, padx=8)
+        self.lbl_wybrany_kolor_tla.pack(side=tk.LEFT, padx=8)
+
+        tk.Label(k3, text="Kolor tekstu:", font=(self.czcionka_nazwa, 10), bg=KARTA_BG, fg=self.kolor_czcionki)\
+            .grid(row=2, column=0, sticky="e", padx=(0, 8), pady=5)
+        fcz = tk.Frame(k3, bg=KARTA_BG); fcz.grid(row=2, column=1, sticky="w", pady=5)
+        self.kolor_czcionki_var = tk.StringVar(value=self.kolor_czcionki)
+        self.pill(fcz, text="Wybierz kolor", command=self.wybierz_kolor_czcionki, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg,
+                  relief="flat", padx=10).pack(side=tk.LEFT)
+        self.lbl_wybrany_kolor_czcionki = tk.Label(fcz, text=self.kolor_czcionki, bg=self.kolor_tla, fg=self.kolor_czcionki, padx=8)
+        self.lbl_wybrany_kolor_czcionki.pack(side=tk.LEFT, padx=8)
+
+        self.szerokosc_var = pole(k3, 1, "Szerokość okna (px):", str(self.szerokosc_okna), kolumna=2, szer=10)
+        self.wysokosc_var = pole(k3, 2, "Wysokość okna (px):", str(self.wysokosc_okna), kolumna=2, szer=10)
+
+        # ---- Zaawansowane: nazwy kolumn i przyciskow ----
+        k4 = karta("Zaawansowane — nazwy kolumn i przycisków",
+                   opis="Zwykle nie trzeba tego zmieniać. Dotyczy tylko podpisów widocznych na ekranie, nie wpływa na dane.")
+        etykiety_kol = [
+            ("VIP / Straty:", "kol_vip", self.kol_vip), ("Karta Mob.:", "kol_kmob", self.kol_kmob),
+            ("Karta Kasa:", "kol_kkasa", self.kol_kkasa), ("Przelewy:", "kol_przelewy", self.kol_przelewy),
+            ("Foodsi:", "kol_foodsi", self.kol_foodsi), ("Serwis / Tip:", "kol_serwis", self.kol_serwis),
+            ("Suma POS:", "kol_razem", self.kol_razem), ("Gotówka oczek.:", "kol_gotowka", self.kol_gotowka),
+            ("Zdano fizycznie:", "kol_sprawdz", self.kol_sprawdz), ("Różnica:", "kol_roznica", self.kol_roznica),
+        ]
+        for idx, (etykieta, klucz, wartosc) in enumerate(etykiety_kol):
+            wiersz = 1 + idx // 2
+            kolumna = 0 if idx % 2 == 0 else 2
+            setattr(self, f"{klucz}_var", pole(k4, wiersz, etykieta, wartosc, kolumna=kolumna, szer=18))
+
+        etykiety_txt = [
+            ("Nagłówek daty:", "txt_wybor_daty", self.txt_wybor_daty), ("Nagłówek weryfikacji:", "txt_weryfikacja", self.txt_weryfikacja),
+            ("Nagłówek kalkulatora:", "txt_kalkulator", self.txt_kalkulator), ("Nagłówek tabeli:", "txt_wprowadzanie", self.txt_wprowadzanie),
+            ("Etykieta „Rozlicza”:", "txt_kto_rozlicza", self.txt_kto_rozlicza), ("Etykieta „Komentarz”:", "txt_komentarz", self.txt_komentarz),
+            ("Przycisk „Wczytaj”:", "txt_wczytaj_btn", self.txt_wczytaj_btn), ("Przycisk „Wyczyść”:", "txt_wyczysc_btn", self.txt_wyczysc_btn),
+            ("Przycisk „Zapisz”:", "txt_zapisz_btn", self.txt_zapisz_btn), ("Przycisk „E-mail”:", "txt_wyslij_btn", self.txt_wyslij_btn),
+            ("Przycisk „Podziel i Przypisz”:", "txt_podziel_btn", self.txt_podziel_btn),
+            ("Przycisk „+ Dodaj Kelnera”:", "txt_dodaj_kelnera_btn", self.txt_dodaj_kelnera_btn),
+            ("Przycisk „- Usuń” (wiersz):", "txt_usun_wiersz_btn", self.txt_usun_wiersz_btn),
+            ("Przycisk „Oblicz podział”:", "txt_oblicz_gotowka_btn", self.txt_oblicz_gotowka_btn),
+            ("Przycisk „Wczytaj Dzień” (Obecności):", "txt_wczytaj_obc_btn", self.txt_wczytaj_obc_btn),
+            ("Przycisk „Wyczyść” (Obecności):", "txt_wyczysc_obc_btn", self.txt_wyczysc_obc_btn),
+            ("Przycisk „+ Dodaj Pracownika”:", "txt_dodaj_obc_btn", self.txt_dodaj_obc_btn),
+            ("Przycisk „Zapisz Obecności Dnia”:", "txt_zapisz_obc_btn", self.txt_zapisz_obc_btn),
+            ("Nagłówek kalkulatora gotówki:", "txt_kalkulator_gotowka_naglowek", self.txt_kalkulator_gotowka_naglowek),
+            ("Nagłówek daty (Obecności):", "txt_wybor_daty_obc", self.txt_wybor_daty_obc),
+            ("Nagłówek godzin pracy:", "txt_godziny_naglowek", self.txt_godziny_naglowek),
+            ("Nagłówek podsumowania (Obecności):", "txt_podsumowanie_obc_naglowek", self.txt_podsumowanie_obc_naglowek),
+        ]
+        baza = 1 + (len(etykiety_kol) + 1) // 2
+        for idx, (etykieta, klucz, wartosc) in enumerate(etykiety_txt):
+            wiersz = baza + idx // 2
+            kolumna = 0 if idx % 2 == 0 else 2
+            setattr(self, f"{klucz}_var", pole(k4, wiersz, etykieta, wartosc, kolumna=kolumna, szer=18))
+
+        btn_zapisz = self.pill(self.tab_ustawienia, text="Zapisz i Odśwież", command=self.zapisz_ustawienia,
+                                bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", font=(self.czcionka_nazwa, 13, "bold"), height=2)
+        btn_zapisz.pack(fill="x", padx=16, pady=(10, 24))
+
+    def buduj_zakladke_rozliczenie(self):
+        now = datetime.now()
+        
+        # 1. SEKJA DATY
+        _zw_top, frame_top = self.zrob_karte(self.tab_rozliczenie, self.txt_wybor_daty)
+        _zw_top.pack(fill="x", padx=20, pady=10)
+        
+        tk.Label(frame_top, text="Rok:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=0, padx=(0, 6), pady=6)
+        self.rok_var = tk.StringVar(value=now.strftime("%Y")); tk.Entry(frame_top, textvariable=self.rok_var, width=5, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent).grid(row=0, column=1, pady=6)
+
+        tk.Label(frame_top, text="Msc (01-12):", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=2, padx=(16, 6), pady=6)
+        self.miesiac_var = tk.StringVar(value=now.strftime("%m")); tk.Entry(frame_top, textvariable=self.miesiac_var, width=4, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent).grid(row=0, column=3, pady=6)
+        self.miesiac_var.trace_add("write", lambda *a: self.odswiez_liste_pracownikow())
+
+        tk.Label(frame_top, text="Dzień:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=4, padx=(16, 6), pady=6)
+        self.dzien_var = tk.StringVar(value=now.strftime("%d")); tk.Entry(frame_top, textvariable=self.dzien_var, width=4, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", highlightthickness=1, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent).grid(row=0, column=5, pady=6)
+        
+        self.pill(frame_top, text=self.txt_wczytaj_btn, command=self.wczytaj_dzien, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=(24, 8), pady=6)
+        self.pill(frame_top, text=self.txt_wyczysc_btn, command=self.wyczysc_formularz, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat").grid(row=0, column=7, padx=8, pady=6)
+        self.pill(frame_top, text="Plik na kolejny miesiąc", command=self.wygeneruj_plik_kolejnego_miesiaca, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=8, padx=(8, 0), pady=6)
+        self.pill(frame_top, text="Eksportuj Rozliczenie (m-c)", command=self.eksportuj_rozliczenie_miesiaca_kos, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=9, padx=(8, 0), pady=6)
+
+        # 2. WERYFIKACJA
+        _zw_bot, frame_bot = self.zrob_karte(self.tab_rozliczenie, self.txt_weryfikacja)
+        _zw_bot.pack(fill="x", padx=20, pady=10)
+
+        _pole_kw = dict(relief="flat", highlightthickness=1)
+        self.fiskal_var = tk.StringVar(value="0.0"); self.fiskal_var.trace_add("write", self.weryfikuj_dane)
+        tk.Label(frame_bot, text="Fiskalny [Z]:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=0, padx=(0, 6), pady=(6, 10), sticky="e")
+        ef = tk.Entry(frame_bot, textvariable=self.fiskal_var, width=12, bg=self.pole_uwaga_bg, fg=self.pole_uwaga_fg, insertbackground=self.pole_uwaga_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); ef.grid(row=0, column=1, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(ef)
+
+        self.raport_karta_mob_var = tk.StringVar(value="0.0"); self.raport_karta_mob_var.trace_add("write", self.weryfikuj_dane)
+        tk.Label(frame_bot, text="Karta Mobilna:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=2, padx=(0, 6), pady=(6, 10), sticky="e")
+        ekm = tk.Entry(frame_bot, textvariable=self.raport_karta_mob_var, width=12, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); ekm.grid(row=0, column=3, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(ekm)
+        
+        self.raport_karta_kasa_var = tk.StringVar(value="0.0"); self.raport_karta_kasa_var.trace_add("write", self.weryfikuj_dane)
+        tk.Label(frame_bot, text="Karta Kasa:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=4, padx=(0, 6), pady=(6, 10), sticky="e")
+        ekk = tk.Entry(frame_bot, textvariable=self.raport_karta_kasa_var, width=12, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); ekk.grid(row=0, column=5, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(ekk)
+
+        # Liczba paragonow (do wyliczenia sredniego rachunku na Dashboardzie
+        # KOS) - celowo za raportem fiskalnym i terminalami, przed Fakturami,
+        # zgodnie z proshba Jakuba.
+        self.paragony_var = tk.StringVar(value="0")
+        tk.Label(frame_bot, text="Liczba paragonów:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=6, padx=(10, 6), pady=(6, 10), sticky="e")
+        epar = tk.Entry(frame_bot, textvariable=self.paragony_var, width=12, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); epar.grid(row=0, column=7, padx=(0, 16), pady=(6, 10)); self.przypnij_czyszczenie_zer(epar)
+
+        self.faktury_var = tk.StringVar(value="0.0"); self.faktury_var.trace_add("write", self.weryfikuj_dane)
+        tk.Label(frame_bot, text="Faktury [AA]:", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=8, padx=(10, 6), pady=(6, 10), sticky="e")
+        efak = tk.Entry(frame_bot, textvariable=self.faktury_var, width=12, bg=self.pole_uwaga_bg, fg=self.pole_uwaga_fg, insertbackground=self.pole_uwaga_fg, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, **_pole_kw); efak.grid(row=0, column=9, pady=(6, 10)); self.przypnij_czyszczenie_zer(efak)
+
+        self.lbl_suma_kart = tk.Label(frame_bot, text="Suma kart: 0.00", font=(self.czcionka_nazwa, 9, "italic"), bg=self.karta_bg, fg=self.tekst_muted)
+        self.lbl_suma_kart.grid(row=1, column=2, columnspan=4)
+
+        self.lbl_weryfikacja = tk.Label(frame_bot, text="Wpisz dane...", font=(self.czcionka_nazwa, 10, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki)
+        self.lbl_weryfikacja.grid(row=1, column=0, columnspan=2, pady=5)
+
+        self.lbl_gotowka_suma = tk.Label(frame_bot, text=f"OCZEKIWANA GOTÓWKA: 0.00", font=(self.czcionka_nazwa, 11, "bold"), fg="#7DD3FC", bg=self.karta_bg)
+        self.lbl_gotowka_suma.grid(row=1, column=6, columnspan=2)
+
+        self.lbl_sprawdz_suma = tk.Label(frame_bot, text=f"SPRAWDZONO W KASIE: 0.00", font=(self.czcionka_nazwa, 11, "bold"), fg=self.kolor_sukces, bg=self.karta_bg)
+        self.lbl_sprawdz_suma.grid(row=2, column=6, columnspan=2)
+
+        self.lbl_roznica_suma = tk.Label(frame_bot, text=f"RÓŻNICA: ---", font=(self.czcionka_nazwa, 12, "bold"), bg=self.karta_bg, fg=self.kolor_czcionki)
+        self.lbl_roznica_suma.grid(row=3, column=6, columnspan=2, pady=(0,5))
+
+        # 3. KALKULATOR
+        _zw_fc, fc = self.zrob_karte(self.tab_rozliczenie, self.txt_kalkulator)
+        _zw_fc.pack(fill="x", padx=20, pady=10)
+        
+        _calc_kw = dict(relief="flat", highlightthickness=1, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg)
+        self.calc_1_var = tk.StringVar(value="0.0"); ec1 = tk.Entry(fc, textvariable=self.calc_1_var, width=7, **_calc_kw); tk.Label(fc, text="Raport 1:", font=(self.czcionka_nazwa, 10), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=0, pady=6); ec1.grid(row=0, column=1, padx=(6, 5), pady=6); self.przypnij_czyszczenie_zer(ec1)
+        self.calc_2_var = tk.StringVar(value="0.0"); ec2 = tk.Entry(fc, textvariable=self.calc_2_var, width=7, **_calc_kw); tk.Label(fc, text="Raport 2:", font=(self.czcionka_nazwa, 10), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=2, pady=6); ec2.grid(row=0, column=3, padx=(6, 5), pady=6); self.przypnij_czyszczenie_zer(ec2)
+        self.calc_3_var = tk.StringVar(value="0.0"); ec3 = tk.Entry(fc, textvariable=self.calc_3_var, width=7, **_calc_kw); tk.Label(fc, text="Raport 3:", font=(self.czcionka_nazwa, 10), bg=self.karta_bg, fg=self.kolor_czcionki).grid(row=0, column=4, pady=6); ec3.grid(row=0, column=5, padx=(6, 5), pady=6); self.przypnij_czyszczenie_zer(ec3)
+        self.pill(fc, text=self.txt_podziel_btn, command=self.podziel_serwis, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=6, padx=15, pady=6)
+        tk.Label(fc, text="(Kuchnia zawsze 25% płasko, Bar wykluczony (0 zł), reszta 75% proporcjonalnie do godzin tylko dla kelnerów)", font=(self.czcionka_nazwa, 8, "italic"), bg=self.karta_bg, fg=self.tekst_muted).grid(row=1, column=0, columnspan=7, sticky="w", pady=(2,4))
+
+        # 4. KELNERZY
+        self._zw_mid, self.frame_mid = self.zrob_karte(self.tab_rozliczenie, self.txt_wprowadzanie)
+        self._zw_mid.pack(fill="both", expand=True, padx=20, pady=10)
+
+        nags = ["Pracownik", self.kol_vip, self.kol_kmob, self.kol_kkasa, self.kol_przelewy, self.kol_foodsi, self.kol_serwis, self.kol_razem, self.kol_gotowka, self.kol_sprawdz, self.kol_roznica]
+        for i, n in enumerate(nags): tk.Label(self.frame_mid, text=n, font=(self.czcionka_nazwa, 9, "bold"), bg=self.karta_bg, fg=self.tekst_muted, wraplength=84, justify="center").grid(row=0, column=i, padx=4, pady=(0, 10), sticky="s")
+
+        fb = tk.Frame(self.tab_rozliczenie, padx=10, bg=self.kolor_tla); fb.pack(fill="x")
+        self.pill(fb, text=self.txt_dodaj_kelnera_btn, command=self.dodaj_wiersz, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).pack(side=tk.LEFT, padx=10)
+        self.pill(fb, text=self.txt_usun_wiersz_btn, command=self.usun_wiersz, bg="#fee2e2", fg="#991b1b", relief="flat").pack(side=tk.LEFT, padx=5)
+
+        # 5. ROZLICZA I MAIL
+        fa = tk.Frame(self.tab_rozliczenie, bg=self.kolor_tla); fa.pack(fill="x", padx=10, pady=15)
+        tk.Label(fa, text=self.txt_kto_rozlicza, bg=self.kolor_tla, fg=self.kolor_czcionki, font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=0, sticky="ne", pady=5)
+        self.osoba_var = tk.StringVar()
+        self.osoba_cb = ttk.Combobox(fa, textvariable=self.osoba_var, values=self.lista_kelnerow, width=20); self.osoba_cb.grid(row=0, column=1, sticky="nw", pady=5)
+        self.osoba_cb.bind('<KeyRelease>', lambda e, cb=self.osoba_cb: self.autocomplete_pracownik(e, cb))
+        self._blokuj_scroll_na_combo(self.osoba_cb)
+        
+        tk.Label(fa, text=self.txt_komentarz, bg=self.kolor_tla, fg=self.kolor_czcionki, justify="right").grid(row=0, column=2, sticky="ne", pady=5, padx=20)
+        kf = tk.Frame(fa, bg=self.kolor_tla, highlightthickness=1, highlightbackground=self.karta_border); kf.grid(row=0, column=3, sticky="we", pady=5)
+        self.komentarz_txt = tk.Text(kf, width=60, height=3, wrap="word", bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, relief="flat", bd=8); self.komentarz_txt.pack(side="left", fill="both", expand=True)
+        self.lbl_komentarz_licznik = tk.Label(fa, text=f"0 / {MIN_DLUGOSC_KOMENTARZA} znaków", font=(self.czcionka_nazwa, 8, "italic"), bg=self.kolor_tla, fg=self.kolor_header_muted)
+        self.lbl_komentarz_licznik.grid(row=1, column=3, sticky="w", pady=(2, 0))
+        self.komentarz_txt.bind("<KeyRelease>", self._odswiez_licznik_komentarza)
+
+        bf = tk.Frame(self.tab_rozliczenie, bg=self.kolor_tla); bf.pack(pady=5, fill="x", padx=10)
+        self.btn_zapisz_dzien = self.pill(bf, text=self.txt_zapisz_btn, command=self.zapisz_excel, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, relief="flat", font=(self.czcionka_nazwa, 13, "bold"), height=2)
+        self.btn_zapisz_dzien.pack(side=tk.LEFT, expand=True, fill="x", padx=5)
+        self.pill(bf, text=self.txt_wyslij_btn, command=self.wyslij_raport_email, bg=self.kolor_akcent, fg=self.kolor_akcent_fg, outline=True, relief="flat", font=(self.czcionka_nazwa, 13, "bold"), height=2).pack(side=tk.RIGHT, expand=True, fill="x", padx=5)
+
+    def buduj_zakladke_kalkulator_gotowka(self):
+        tk.Label(self.tab_kalkulator_gotowka, text="Kalkulator Napiwków Gotówki", font=(self.czcionka_nazwa, 18, "bold"), bg=self.kolor_tla, fg=self.kolor_czcionki).pack(pady=15)
+
+        _zw_fg, fg = self.zrob_karte(self.tab_kalkulator_gotowka, self.txt_kalkulator_gotowka_naglowek)
+        _zw_fg.pack(fill="x", padx=20, pady=12)
+
+        tk.Label(fg, text="Gotówka do podziału:", bg=self.kolor_tla, fg=self.kolor_czcionki).grid(row=0, column=0, padx=5)
+        self.gotowka_pula_var = tk.StringVar(value="0.0")
+        egp = tk.Entry(fg, textvariable=self.gotowka_pula_var, width=10, bg="white", fg="black", insertbackground="black"); egp.grid(row=0, column=1, padx=5); self.przypnij_czyszczenie_zer(egp)
+        self.pill(fg, text=self.txt_oblicz_gotowka_btn, command=self.oblicz_napiwki_gotowka, bg=self.kolor_wygaszony_bg, fg=self.kolor_wygaszony_fg, relief="flat", font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=2, padx=15)
+        tk.Label(fg, text="Kuchnia zawsze 25% płasko, Bar wykluczony (0 zł), reszta 75% wg godzin dla kelnerów — wynik tylko na ekranie", font=(self.czcionka_nazwa, 8, "italic"), bg=self.kolor_tla, fg=self.kolor_header_muted).grid(row=0, column=3, padx=10, sticky="w")
+
+        self.txt_wynik_gotowka = tk.Text(fg, width=66, height=3, wrap="word", state="disabled",
+                                          bg=self.kolor_tla, fg=self.tekst_muted, relief="flat", bd=0,
+                                          font=(self.czcionka_nazwa, 10))
+        self.txt_wynik_gotowka.grid(row=1, column=0, columnspan=4, pady=(10, 2), sticky="w")
+        self.txt_wynik_gotowka.config(state="normal")
+        self.txt_wynik_gotowka.insert("1.0", "Wpisz kwotę gotówki i kliknij „Oblicz podział”, aby zobaczyć wynik.")
+        self.txt_wynik_gotowka.config(state="disabled")
+
+        tk.Label(self.tab_kalkulator_gotowka, text='Kalkulator korzysta z godzin wpisanych w zakładce "Obecności" oraz dnia wybranego powyżej.', font=(self.czcionka_nazwa, 9, "italic"), bg=self.kolor_tla, fg=self.kolor_header_muted).pack(pady=(0,10))
+
+    # ===================== KASA: WYDATKI I WPŁATY =====================
+    # Wydatki gotowkowe (paragony z NIP) i wplaty gotowki do banku - kazdy
+    # wpis zyje wylacznie w KOS (freyonator_kasa_operacje, patrz
+    # supabase/018_freyonator_kasa_operacje.sql i
+    # app/api/freyonator/kasa-operacje), tak jak "Rozliczenie Dnia" od Fazy 1
+    # migracji. "Aktualny stan gotowki" NIE jest wpisywany recznie - liczony
+    # jest po stronie serwera jako suma gotowki sprawdzonej (Rozliczenia Dnia)
+    # minus suma wszystkich operacji kasowych, wiec kazdy dodany/usuniety
+    # wpis od razu zmienia pokazywany stan.
+
+    def buduj_zakladke_kasa(self):
+        tk.Label(self.tab_kasa, text="Kasa: Wydatki i Wpłaty", font=(self.czcionka_nazwa, 18, "bold"),
+                 bg=self.kolor_tla, fg=self.kolor_czcionki).pack(pady=15)
+        tk.Label(self.tab_kasa,
+                 text="Wydatki gotówkowe (paragony z NIP) i wpłaty gotówki do banku - każdy wpis pomniejsza\n"
+                      "aktualny stan gotówki w kasie (liczony z gotówki sprawdzonej w Rozliczeniach Dnia).",
+                 font=(self.czcionka_nazwa, 9, "italic"), bg=self.kolor_tla, fg=self.kolor_header_muted, justify="center").pack(pady=(0, 10))
+
+        # ---- Karta: aktualny stan gotówki ----
+        _zw_stan, fstan = self.zrob_karte(self.tab_kasa, "Aktualny stan gotówki w kasie")
+        _zw_stan.pack(fill="x", padx=20, pady=12)
+        self.lbl_kasa_stan = tk.Label(fstan, text="— zł", font=(self.czcionka_nazwa, 26, "bold"),
+                                       fg="#7DD3FC", bg=self.karta_bg)
+        self.lbl_kasa_stan.pack(side="left", padx=(4, 20), pady=6)
+        self.pill(fstan, text="Odśwież", command=self._kos_wczytaj_kasa, bg=self.kolor_wygaszony_bg,
+                  fg=self.kolor_wygaszony_fg, relief="flat").pack(side="left", pady=6)
+        tk.Label(fstan, text="Suma gotówki sprawdzonej (Rozliczenia Dnia) minus wydatki i wpłaty do banku.",
+                 font=(self.czcionka_nazwa, 9), bg=self.karta_bg, fg=self.tekst_muted, wraplength=320,
+                 justify="left").pack(side="left", padx=16)
+
+        # ---- Karta: dodaj operację ----
+        _zw_dod, fd = self.zrob_karte(self.tab_kasa, "Dodaj operację")
+        _zw_dod.pack(fill="x", padx=20, pady=12)
+        _pole_kw = dict(relief="flat", highlightthickness=1, highlightbackground=self.karta_border,
+                         highlightcolor=self.kolor_akcent, bg=self.pole_bg, fg=self.pole_fg,
+                         insertbackground=self.pole_fg, font=(self.czcionka_nazwa, 10))
+
+        tk.Label(fd, text="Typ:", bg=self.karta_bg, fg=self.kolor_czcionki,
+                 font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=0, padx=8, pady=8, sticky="e")
+        self.kasa_typ_var = tk.StringVar(value=self._kasa_typy_opis[0])
+        typ_cb = ttk.Combobox(fd, textvariable=self.kasa_typ_var, values=self._kasa_typy_opis, state="readonly", width=28)
+        typ_cb.grid(row=0, column=1, padx=8, pady=8, sticky="w")
+        self._blokuj_scroll_na_combo(typ_cb)
+
+        tk.Label(fd, text="Data (RRRR-MM-DD):", bg=self.karta_bg, fg=self.kolor_czcionki,
+                 font=(self.czcionka_nazwa, 10, "bold")).grid(row=0, column=2, padx=8, pady=8, sticky="e")
+        self.kasa_data_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        tk.Entry(fd, textvariable=self.kasa_data_var, width=12, **_pole_kw).grid(row=0, column=3, padx=8, pady=8, sticky="w")
+
+        tk.Label(fd, text="Kwota (zł):", bg=self.karta_bg, fg=self.kolor_czcionki,
+                 font=(self.czcionka_nazwa, 10, "bold")).grid(row=1, column=0, padx=8, pady=8, sticky="e")
+        self.kasa_kwota_var = tk.StringVar(value="0.0")
+        ekw = tk.Entry(fd, textvariable=self.kasa_kwota_var, width=12, **_pole_kw)
+        ekw.grid(row=1, column=1, padx=8, pady=8, sticky="w")
+        self.przypnij_czyszczenie_zer(ekw)
+
+        tk.Label(fd, text="Opis:", bg=self.karta_bg, fg=self.kolor_czcionki,
+                 font=(self.czcionka_nazwa, 10, "bold")).grid(row=1, column=2, padx=8, pady=8, sticky="e")
+        self.kasa_opis_var = tk.StringVar(value="")
+        tk.Entry(fd, textvariable=self.kasa_opis_var, width=32, **_pole_kw).grid(row=1, column=3, padx=8, pady=8, sticky="w")
+
+        self.btn_dodaj_operacje_kasa = self.pill(
+            fd, text="Dodaj operację", command=self._kos_dodaj_operacje_kasa, bg=self.kolor_akcent,
+            fg=self.kolor_bialy, relief="flat", font=(self.czcionka_nazwa, 10, "bold"),
+        )
+        self.btn_dodaj_operacje_kasa.grid(row=2, column=0, columnspan=4, pady=(10, 4))
+
+        # ---- Karta: historia operacji ----
+        _zw_hist, self.frame_kasa_historia = self.zrob_karte(self.tab_kasa, "Historia operacji (ostatnie 100)")
+        _zw_hist.pack(fill="x", padx=20, pady=(12, 24))
+        self.lbl_kasa_historia_pusta = tk.Label(self.frame_kasa_historia, text="Ładowanie...",
+                                                 font=(self.czcionka_nazwa, 10, "italic"),
+                                                 bg=self.karta_bg, fg=self.tekst_muted)
+        self.lbl_kasa_historia_pusta.pack(anchor="w", pady=6)
+        self.wiersze_kasa.append(self.lbl_kasa_historia_pusta)
+
+    def _kasa_wyczysc_historie(self):
+        for w in getattr(self, "wiersze_kasa", []):
+            w.destroy()
+        self.wiersze_kasa = []
+
+    def _kasa_dodaj_wiersz_historii(self, op):
+        typ = op.get("typ")
+        typ_opis = "Wydatek" if typ == "wydatek" else "Wpłata do banku"
+        kolor_typ = self.kolor_blad if typ == "wydatek" else "#60A5FA"
+        kwota = self.bezpieczny_float(op.get("kwota"))
+        opis = (op.get("opis") or "").strip()
+        nip = (op.get("nip") or "").strip()
+        numer = (op.get("numer_dokumentu") or "").strip()
+
+        w = tk.Frame(self.frame_kasa_historia, bg=self.karta_bg)
+        w.pack(fill="x", pady=3)
+        tk.Label(w, text=str(op.get("data") or ""), width=11, font=(self.czcionka_nazwa, 10),
+                 bg=self.karta_bg, fg=self.tekst_muted).pack(side="left", padx=(0, 10))
+        tk.Label(w, text=typ_opis, width=16, font=(self.czcionka_nazwa, 10, "bold"),
+                 bg=self.karta_bg, fg=kolor_typ, anchor="w").pack(side="left", padx=(0, 10))
+        tk.Label(w, text=f"-{kwota:.2f} zł", width=12, font=(self.czcionka_nazwa, 10, "bold"),
+                 bg=self.karta_bg, fg=self.kolor_czcionki, anchor="w").pack(side="left", padx=(0, 10))
+        opis_pelny = opis
+        if nip:
+            opis_pelny += (" • " if opis_pelny else "") + f"NIP {nip}"
+        if numer:
+            opis_pelny += (" • " if opis_pelny else "") + f"nr {numer}"
+        tk.Label(w, text=opis_pelny or "—", font=(self.czcionka_nazwa, 10), bg=self.karta_bg,
+                 fg=self.kolor_czcionki, anchor="w", justify="left").pack(side="left", fill="x", expand=True, padx=(0, 10))
+        op_id = op.get("id")
+        self.pill(w, text="Usuń", command=lambda i=op_id: self._kos_usun_operacje_kasa(i),
+                  bg="#7F1D1D", fg="#FECACA", relief="flat", width=70).pack(side="right")
+        self.wiersze_kasa.append(w)
+
+    def _kos_wczytaj_kasa(self):
+        """Pobiera z KOS aktualny stan gotowki i historie operacji kasowych
+        (freyonator_kasa_operacje, patrz app/api/freyonator/kasa-operacje).
+        Wywolywane przy starcie programu, po (ponownym) zalogowaniu do KOS
+        i po kazdej dodanej/usunietej operacji - zawsze pokazuje aktualny
+        stan. Ciche niepowodzenie (np. brak internetu/logowania) - ta
+        zakladka nigdy nie blokuje reszty programu."""
+        if not hasattr(self, "lbl_kasa_stan"):
+            return  # GUI jeszcze niezbudowane (wywolanie z __init__ przed buduj_gui)
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            self.lbl_kasa_stan.config(text="— zł (zaloguj się do KOS)")
+            self._kasa_wyczysc_historie()
+            self.lbl_kasa_historia_pusta = tk.Label(
+                self.frame_kasa_historia, text="Zaloguj się do konta KOS w Ustawieniach, aby zobaczyć historię.",
+                font=(self.czcionka_nazwa, 10, "italic"), bg=self.karta_bg, fg=self.tekst_muted)
+            self.lbl_kasa_historia_pusta.pack(anchor="w", pady=6)
+            self.wiersze_kasa.append(self.lbl_kasa_historia_pusta)
+            return
+
+        status, dane = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/kasa-operacje?limit=100",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200 or not isinstance(dane, dict):
+            self.lbl_kasa_stan.config(text="— zł (błąd pobierania)")
+            return
+
+        self.lbl_kasa_stan.config(text=f"{self.bezpieczny_float(dane.get('stan_gotowki')):.2f} zł")
+        self._kasa_wyczysc_historie()
+        operacje = dane.get("operacje") or []
+        if not operacje:
+            pusta = tk.Label(self.frame_kasa_historia, text="Brak zapisanych operacji.",
+                              font=(self.czcionka_nazwa, 10, "italic"), bg=self.karta_bg, fg=self.tekst_muted)
+            pusta.pack(anchor="w", pady=6)
+            self.wiersze_kasa.append(pusta)
+        else:
+            for op in operacje:
+                self._kasa_dodaj_wiersz_historii(op)
+
+    def _kos_dodaj_operacje_kasa(self):
+        typ = self._kasa_typ_backend.get(self.kasa_typ_var.get(), "wydatek")
+        data_wpis = self.kasa_data_var.get().strip()
+        try:
+            datetime.strptime(data_wpis, "%Y-%m-%d")
+        except ValueError:
+            return messagebox.showwarning("Nieprawidłowa data", "Podaj datę w formacie RRRR-MM-DD.")
