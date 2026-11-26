@@ -1,0 +1,690 @@
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() != "kuchnia"]
+        suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
+        if suma_godzin <= 0:
+            return messagebox.showerror("Kalkulator", "Suma godzin kelnerów (bez kuchni) wynosi 0 — nie można podzielić proporcjonalnie 75% puli.")
+
+        kwoty = {n: round(pula_kelnerzy * (g / suma_godzin), 2) for n, s, g in godziny_kelnerzy}
+
+        wiersze_kuchnia = [w for w in self.wiersze_danych if self._wiersz_to_kuchnia(w[0].get())]
+        wiersze_bar = [w for w in self.wiersze_danych if self._wiersz_to_bar(w[0].get())]
+        wiersze_kelnerzy = [w for w in self.wiersze_danych if w not in wiersze_kuchnia and w not in wiersze_bar]
+
+        dopasowani = set()
+        for w in wiersze_kelnerzy:
+            nazwa_wiersza = w[0].get()
+            _, _nazwa_czysta_surowa = self._rozbij_nr_nazwe(nazwa_wiersza)
+            surowa = _nazwa_czysta_surowa.lower()
+            for n, s, g in godziny_kelnerzy:
+                if n.lower() == surowa:
+                    w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(kwoty[n]))
+                    dopasowani.add(n.lower())
+                    break
+
+        # "Kuchnia" i "Bar" w Rozliczeniu Dnia to zbiorcze wiersze stanowiska
+        # (kod kasowy), a nie konkretna osoba. Kuchnia dostaje swoja plaska
+        # kwote 25% niezaleznie od godzin, Bar dostaje 0 zl (wykluczony z
+        # podzialu serwisu w ogole).
+        for w in wiersze_kuchnia:
+            w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, str(kuchnia_suma))
+
+        for w in wiersze_bar:
+            w[6].config(state="normal"); w[6].delete(0, tk.END); w[6].insert(0, "0.0")
+
+        self.weryfikuj_dane()
+        podsumowanie = "\n".join(f"{n} ({s}): {g:.2f}h -> {kwoty[n]:.2f} zł" for n, s, g in sorted(godziny_kelnerzy, key=lambda x: -x[2]))
+        niedopasowani = [n for n, s, g in godziny_kelnerzy if n.lower() not in dopasowani]
+        info_extra = f"\n\nNie znaleziono w tabeli kelnerów wiersza dla: {', '.join(niedopasowani)} (ich udział nie został nigdzie wpisany)" if niedopasowani else ""
+        messagebox.showinfo(
+            "Kalkulator",
+            f"Kuchnia: {kuchnia_suma:.2f} zł (zawsze 25%, płasko)\n"
+            f"Bar: 0.00 zł (wykluczony z podziału)\n"
+            f"Kelnerzy: {pula_kelnerzy:.2f} zł — 75% podzielone proporcjonalnie do godzin (suma {suma_godzin:.2f}h):\n\n"
+            f"{podsumowanie}{info_extra}",
+        )
+
+    def oblicz_napiwki_gotowka(self):
+        pula = self.pobierz_float(self.gotowka_pula_var.get())
+        if pula <= 0:
+            return messagebox.showwarning("Kalkulator gotówki", "Wpisz kwotę gotówki do podziału.")
+
+        wykluczeni = self.lista_wykluczonych_napiwki()
+        godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
+                   if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
+
+        # Ta sama zasada co w zakladce "Rozliczenie Dnia" (podziel_serwis -
+        # patrz komentarz tam o sekcji "bar" bedacej domyslna etykieta
+        # wszystkich kelnerow, nie oznaczajaca wykluczenia): Kuchnia dostaje
+        # zawsze plaskie 25% calej puli (niezaleznie od godzin), zbiorczy
+        # wiersz/kasa "Bar" w Rozliczeniu Dnia jest calkowicie wykluczony z
+        # podzialu (0 zl), a pozostale 75% jest dzielone proporcjonalnie do
+        # godzin miedzy wszystkich kelnerow w Obecnosciach (sekcja inna niz
+        # "kuchnia"/"admin" - sekcja "bar" to domyslna etykieta kelnerow, nie
+        # wyklucza ich stad).
+        kuchnia_suma = round(pula * 0.25, 2)
+        pula_kelnerzy = round(pula - kuchnia_suma, 2)
+        godziny_kelnerzy = [(n, s, g) for n, s, g in godziny if str(s).strip().lower() != "kuchnia"]
+        suma_godzin = sum(g for _, _, g in godziny_kelnerzy)
+
+        linie = [
+            f"PULA GOTÓWKI: {pula:.2f} zł", "",
+            f"Kuchnia: {kuchnia_suma:.2f} zł (zawsze 25%, płasko, niezależnie od godzin)",
+            "Bar: 0.00 zł (wykluczony z podziału serwisu)", "",
+        ]
+
+        if godziny_kelnerzy and suma_godzin > 0:
+            linie.append(f"--- KELNERZY, 75% = {pula_kelnerzy:.2f} zł ({suma_godzin:.2f}h łącznie) ---")
+            for n, s, g in sorted(godziny_kelnerzy, key=lambda x: -x[2]):
+                linie.append(f"  {n}: {g:.2f}h -> {(pula_kelnerzy * g / suma_godzin):.2f} zł")
+            razem = pula
+        else:
+            linie.append(f"  Brak godzin kelnerów w Obecnościach dla tego dnia — 75% puli ({pula_kelnerzy:.2f} zł) nie zostało podzielone.")
+            razem = kuchnia_suma
+
+        linie.append("")
+        linie.append(f"RAZEM WYPŁACONE: {razem:.2f} zł")
+        linie.append("")
+        linie.append("Wynik nie jest zapisywany do Excela ani nigdzie indziej — tylko podgląd.")
+
+        self.txt_wynik_gotowka.config(state="normal", height=max(3, min(22, len(linie))))
+        self.txt_wynik_gotowka.delete("1.0", tk.END)
+        self.txt_wynik_gotowka.insert("1.0", "\n".join(linie))
+        self.txt_wynik_gotowka.config(state="disabled")
+
+    def uzupelnij_kelnerow_z_obecnosci(self, rok, miesiac, dzien):
+        """Dodaje w Rozliczeniu Dnia wiersze dla pracowników wpisanych w zakładce Obecności
+        danego dnia (bar/kelnerzy), którzy jeszcze nie mają swojego wiersza. Kuchnia liczona
+        jest zbiorczo (wg godzin) i nie potrzebuje osobnego wiersza. Admin nie bierze udziału
+        w rozliczeniach zmianowych w ogóle - nigdy nie dostaje tu własnego wiersza."""
+        try:
+            obecni = self.zbierz_godziny_obecnosci_dnia(rok, miesiac, dzien)
+        except Exception:
+            return
+        if not obecni:
+            return
+        def _nazwa_wiersza(w):
+            n = w[0].get()
+            _, nazwa_czysta = self._rozbij_nr_nazwe(n)
+            return nazwa_czysta.lower()
+        istniejace = {_nazwa_wiersza(w) for w in self.wiersze_danych}
+        for nazwa, sekcja, godz in obecni:
+            if str(sekcja).strip().lower() in ("kuchnia", "admin"):
+                continue
+            if nazwa.strip().lower() in istniejace:
+                continue
+            wpis = next((k for k in self.lista_kelnerow if self._rozbij_nr_nazwe(k)[1].lower() == nazwa.strip().lower()), nazwa)
+            self.dodaj_wiersz(wpis)
+            istniejace.add(nazwa.strip().lower())
+
+    def wygeneruj_plik_kolejnego_miesiaca(self):
+        """Tworzy z szablonu pusty plik rozliczen na miesiac nastepujacy po tym,
+        ktory jest aktualnie wybrany w polach Rok/Msc (przydatne np. pod koniec
+        miesiaca, zeby przygotowac plik z wyprzedzeniem)."""
+        try:
+            msc_akt = int(self.miesiac_var.get())
+            rok_akt = int(self.rok_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc w polach powyżej.")
+        msc_nast, rok_nast = (1, rok_akt + 1) if msc_akt >= 12 else (msc_akt + 1, rok_akt)
+        nazwa_msc = self.slownik_miesiecy.get(f"{msc_nast:02d}", "MAJ")
+        plik = self.sciezka(self.format_nazwy_pliku.replace("{miesiac}", nazwa_msc))
+        if os.path.exists(plik):
+            return messagebox.showinfo("Info", f"Plik na {nazwa_msc} {rok_nast} już istnieje:\n{plik}")
+        szablon = self.sciezka(self.szablon_plik)
+        if not os.path.exists(szablon):
+            return messagebox.showerror("Błąd", "Brak szablonu.")
+        try:
+            shutil.copy(szablon, plik)
+            wb = openpyxl.load_workbook(plik)
+            ws = wb.active
+            ws["G2"] = nazwa_msc
+            wb.save(plik)
+            wb.close()
+        except Exception as e:
+            return messagebox.showerror("Błąd", str(e))
+        messagebox.showinfo("Gotowe", f"Utworzono plik na {nazwa_msc} {rok_nast}:\n{plik}")
+
+    def wczytaj_dzien(self):
+        """Wczytuje rozliczenie dnia z bazy KOS (nie z lokalnego Excela - patrz
+        _kos_wczytaj_dzien, od Fazy 1 migracji "Rozliczenie Dnia" dane dnia
+        zyja wylacznie w KOS)."""
+        dz = int(self.dzien_var.get())
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+        url = (
+            f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia"
+            f"?rok={int(self.rok_var.get())}&miesiac={int(self.miesiac_var.get())}&dzien={dz}"
+        )
+        status, dane = self._kos_http("GET", url, headers={"Authorization": f"Bearer {access_token}"})
+        if status != 200 or not isinstance(dane, dict):
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się wczytać dnia z KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd", tresc)
+
+        self.wyczysc_formularz()
+        # wyczysc_formularz() juz odtworzyl stale wiersze Kuchnia+Bar (zawsze
+        # pierwsze dwa, patrz obsluga_typu_pracownika) - bierzemy je wprost,
+        # zamiast dodawac drugi raz.
+        w_kuchnia = self.wiersze_danych[0]
+        w_bar = self.wiersze_danych[1]
+
+        for p in (dane.get("pracownicy") or []):
+            imie = str(p.get("pracownik") or "").strip()
+            if not imie:
+                continue
+            if self._wiersz_to_kuchnia(imie):
+                w_kuchnia[6].delete(0, tk.END); w_kuchnia[6].insert(0, f"{self.bezpieczny_float(p.get('serwis')):.2f}")
+                continue
+            if self._wiersz_to_bar(imie):
+                for pole, klucz in ((1, 'vip'), (2, 'karta_mob'), (3, 'karta_kasa'), (4, 'przelewy'), (5, 'foodsi'), (7, 'razem'), (9, 'zdano')):
+                    w_bar[pole].delete(0, tk.END); w_bar[pole].insert(0, f"{self.bezpieczny_float(p.get(klucz)):.2f}")
+                continue
+            nr = p.get("nr_pracownika")
+            wpis = f"{int(nr)} - {imie}" if isinstance(nr, (int, float)) else imie
+            self.dodaj_wiersz(wpis); w = self.wiersze_danych[-1]
+
+            w[7].delete(0, tk.END); w[7].insert(0, f"{self.bezpieczny_float(p.get('razem')):.2f}")
+            w[1].delete(0, tk.END); w[1].insert(0, f"{self.bezpieczny_float(p.get('vip')):.2f}")
+            w[2].delete(0, tk.END); w[2].insert(0, f"{self.bezpieczny_float(p.get('karta_mob')):.2f}")
+            w[3].delete(0, tk.END); w[3].insert(0, f"{self.bezpieczny_float(p.get('karta_kasa')):.2f}")
+            w[4].delete(0, tk.END); w[4].insert(0, f"{self.bezpieczny_float(p.get('przelewy')):.2f}")
+            w[5].delete(0, tk.END); w[5].insert(0, f"{self.bezpieczny_float(p.get('foodsi')):.2f}")
+            w[6].delete(0, tk.END); w[6].insert(0, f"{self.bezpieczny_float(p.get('serwis')):.2f}")
+            w[9].delete(0, tk.END); w[9].insert(0, f"{self.bezpieczny_float(p.get('zdano')):.2f}")
+
+        self.uzupelnij_kelnerow_z_obecnosci(self.rok_var.get(), self.miesiac_var.get(), dz)
+
+        wer = dane.get("weryfikacja") or {}
+        self.fiskal_var.set(str(wer.get("fiskal") if wer.get("fiskal") is not None else "0.0"))
+        self.faktury_var.set(str(wer.get("faktury") if wer.get("faktury") is not None else "0.0"))
+        self.raport_karta_mob_var.set(str(wer.get("karta_mob_raport") if wer.get("karta_mob_raport") is not None else "0.0"))
+        self.raport_karta_kasa_var.set(str(wer.get("karta_kasa_raport") if wer.get("karta_kasa_raport") is not None else "0.0"))
+        self.paragony_var.set(str(int(wer.get("liczba_paragonow"))) if wer.get("liczba_paragonow") is not None else "0")
+        self.osoba_var.set(str(wer.get("osoba") or ""))
+        self.komentarz_txt.delete("1.0", tk.END)
+        self.komentarz_txt.insert("1.0", str(wer.get("komentarz") or ""))
+        self._odswiez_licznik_komentarza()
+        self.weryfikuj_dane()
+        messagebox.showinfo("OK", "Załadowano z KOS.")
+
+    def zapisz_excel(self):
+        """Zapisuje rozliczenie dnia bezposrednio do bazy KOS (nie do lokalnego
+        Excela - patrz app/api/freyonator/dzien-rozliczenia). Od Fazy 1
+        migracji zakladka "Rozliczenie Dnia" juz NIE tworzy/modyfikuje zadnego
+        pliku .xlsx - dane dnia zyja wylacznie w KOS, zeby nie dalo sie ich
+        skopiowac z dysku. Obecnosci i Podsumowanie Miesiac na razie zostaja
+        przy Excelu (kolejne fazy)."""
+        osoba = self.osoba_var.get().strip()
+        if not osoba or osoba == "Wybierz/Wpisz...": return messagebox.showwarning("Wymagane pole", "Wybierz rozliczającego!")
+        dz = int(self.dzien_var.get())
+
+        komentarz = self.komentarz_txt.get("1.0", tk.END).strip()
+        if len(komentarz) < MIN_DLUGOSC_KOMENTARZA:
+            return messagebox.showwarning(
+                "Komentarz zbyt krótki",
+                f"Komentarz / raport zmianowy musi mieć minimum {MIN_DLUGOSC_KOMENTARZA} znaków "
+                f"(obecnie: {len(komentarz)}).\nOpisz dokładniej przebieg dnia - zapisuje się razem z dniem w KOS.",
+            )
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.\n"
+                "Dzień NIE został zapisany.",
+            )
+
+        pracownicy = []
+        suma_sprawdz = 0.0
+        for w in self.wiersze_danych:
+            n = w[0].get()
+            nr, im = self._rozbij_nr_nazwe(n)
+            vip, km, kk, prz, foo, serw, raz = map(
+                self.pobierz_float,
+                [w[1].get(), w[2].get(), w[3].get(), w[4].get(), w[5].get(), w[6].get(), w[7].get()],
+            )
+            zdano = self.pobierz_float(w[9].get())
+            if self._wiersz_to_kuchnia(n):
+                # Tak jak w starym Excelu: pracownicy kuchni nie maja zadnych
+                # danych finansowych poza serwisem.
+                vip = km = kk = prz = foo = raz = got = zdano = 0.0
+            else:
+                got = raz - vip - (km + kk) - prz - foo
+                suma_sprawdz += zdano
+            pracownicy.append({
+                "pracownik": im,
+                "nr_pracownika": int(nr) if str(nr).isdigit() else None,
+                "vip": vip, "karta_mob": km, "karta_kasa": kk,
+                "przelewy": prz, "foodsi": foo, "serwis": serw,
+                "razem": raz, "gotowka": got, "zdano": zdano,
+            })
+
+        fisk, fakt, tmob, tkas = map(
+            self.pobierz_float,
+            [self.fiskal_var.get(), self.faktury_var.get(), self.raport_karta_mob_var.get(), self.raport_karta_kasa_var.get()],
+        )
+        paragony = int(round(self.pobierz_float(self.paragony_var.get())))
+        weryfikacja = {
+            "fiskal": fisk, "faktury": fakt,
+            "karta_mob_raport": tmob, "karta_kasa_raport": tkas,
+            "gotowka_sprawdzona": suma_sprawdz,
+            "liczba_paragonow": paragony,
+            "osoba": osoba,
+            "komentarz": komentarz,
+        }
+
+        body = {
+            "p_rok": int(self.rok_var.get()),
+            "p_miesiac": int(self.miesiac_var.get()),
+            "p_dzien": dz,
+            "p_pracownicy": pracownicy,
+            "p_weryfikacja": weryfikacja,
+        }
+        if getattr(self, "btn_zapisz_dzien", None):
+            self.btn_zapisz_dzien.ustaw_aktywny(False)  # blokada podwojnego klikniecia w trakcie zapisu
+        try:
+            status, dane = self._kos_http(
+                "POST",
+                f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia",
+                body=body,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+            )
+        finally:
+            if getattr(self, "btn_zapisz_dzien", None):
+                self.btn_zapisz_dzien.ustaw_aktywny(True)
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się zapisać dnia w KOS. Dzień NIE został zapisany."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd zapisu", tresc)
+
+        self._toast("Zapisano w KOS ✓", typ="sukces")
+
+    def wyslij_raport_email(self):
+        osoba = self.osoba_var.get().strip()
+        if not osoba or osoba == "Wybierz/Wpisz...": return messagebox.showwarning("Wymagane pole", "Wybierz rozliczającego!")
+        dz, msc, rok = self.dzien_var.get(), self.miesiac_var.get(), self.rok_var.get()
+        nazwa_msc = self.slownik_miesiecy.get(msc, msc).capitalize()
+        temat = f"{self.nazwa_programu} — Raport dnia {dz}.{msc}.{rok}"
+        komentarz = self.komentarz_txt.get("1.0", tk.END).strip()
+        if len(komentarz) < MIN_DLUGOSC_KOMENTARZA:
+            return messagebox.showwarning("Komentarz zbyt krótki", f"Komentarz / raport zmianowy musi mieć minimum {MIN_DLUGOSC_KOMENTARZA} znaków (obecnie: {len(komentarz)}).\nOpisz dokładniej przebieg dnia.")
+
+        kreska = "━" * 32
+
+        # Modyfikacja podsumowania e-mail - ukryte manko
+        croz = self.pobierz_float(self.lbl_sprawdz_suma.cget('text').split()[-2]) - self.pobierz_float(self.lbl_gotowka_suma.cget('text').split()[-2])
+        roz_text = "OK" if croz == 0 else (f"+{croz:.2f} zł" if croz > 0 else "---")
+
+        tmob, tkas = self.pobierz_float(self.raport_karta_mob_var.get()), self.pobierz_float(self.raport_karta_kasa_var.get())
+        razem_karty = tmob + tkas
+        fiskal = self.pobierz_float(self.fiskal_var.get())
+        faktury = self.pobierz_float(self.faktury_var.get())
+
+        obecni = [w[0].get() for w in self.wiersze_danych if w[0].get() and w[0].get() != "Wybierz/Wpisz..."]
+
+        body = (
+            f"{self.nazwa_programu.upper()} — RAPORT DZIENNY\n"
+            f"{dz} {nazwa_msc} {rok}\n"
+            f"Rozlicza: {osoba}\n\n"
+
+            f"{kreska}\n"
+            f"FINANSE\n"
+            f"{kreska}\n"
+            f"{self.lbl_gotowka_suma.cget('text')}\n"
+            f"{self.lbl_sprawdz_suma.cget('text')}\n"
+            f"Różnica w kasie: {roz_text}\n"
+            f"Weryfikacja POS: {self.lbl_weryfikacja.cget('text')}\n\n"
+
+            f"{kreska}\n"
+            f"TERMINALE I KASA\n"
+            f"{kreska}\n"
+            f"Fiskal Z:        {fiskal:.2f} zł\n"
+            f"Faktury:         {faktury:.2f} zł\n"
+            f"Karta Mob.:      {tmob:.2f} zł\n"
+            f"Karta Kasa:      {tkas:.2f} zł\n"
+            f"RAZEM (Karty):   {razem_karty:.2f} zł\n\n"
+
+            f"{kreska}\n"
+            f"ZESPÓŁ ({len(obecni)})\n"
+            f"{kreska}\n"
+            + ("\n".join(f"• {o}" for o in obecni) if obecni else "Brak.") + "\n\n"
+
+            f"{kreska}\n"
+            f"KOMENTARZ / OPIS DNIA\n"
+            f"{kreska}\n"
+            f"{komentarz}\n\n"
+
+            f"— Wysłano z {self.nazwa_programu}"
+        )
+        try:
+            webbrowser.open(f"https://mail.google.com/mail/?view=cm&fs=1&to={self.adresy_email.strip()}&su={urllib.parse.quote(temat)}&body={urllib.parse.quote(body)}")
+        except Exception as e: messagebox.showerror("Błąd", str(e))
+
+    def bezpieczny_float(self, val):
+        if val is None or val == "": return 0.0
+        try: return float(str(val).replace(",", "."))
+        except ValueError: return 0.0
+
+    def pobierz_float(self, val):
+        try: return float(val.replace(",", "."))
+        except ValueError: return 0.0
+
+    def get_plik_docelowy(self):
+        msc = self.slownik_miesiecy.get(self.miesiac_var.get(), "MAJ")
+        fmt = getattr(self, 'format_nazwy_var', self).get() if hasattr(self, 'format_nazwy_var') else self.format_nazwy_pliku
+        return self.sciezka(fmt.replace("{miesiac}", msc))
+
+    def odswiez_liste_pracownikow(self):
+        """Buduje self.lista_kelnerow - domyslnie z KOS (tabela
+        shift_employees, ta sama lista co w zakladce "Grafik pracy" na
+        stronie - patrz app/api/freyonator/pracownicy), zeby nie trzeba bylo
+        prowadzic drugiej, osobnej listy pracownikow. Jesli KOS jest
+        niedostepny (brak internetu/tokenu/konta), wraca do starego odczytu
+        z lokalnego pliku Excel, zeby ta zakladka nigdy nie zostala bez listy
+        pracownikow. Sekcja kuchnia/bar per pracownik (self.sekcja_kos_map)
+        idzie wprost z KOS (pole "sekcja" w odpowiedzi pracownicy - to samo
+        excluded_from_schedule, co dzieli Zespol w Grafiku pracy na stronie)
+        - uzywane w zakladce Obecnosci do automatycznego przypisania sekcji.
+        Mapa ma klucze pod PELNYM imieniem i nazwiskiem (tak jak jest w KOS),
+        a dodatkowo (zapasowo) pod samym pierwszym imieniem - zeby wpisanie
+        np. samego "Daniel" tez trafilo w sekcje, bez koniecznosci wybrania
+        pelnej nazwy z podpowiedzi. Gdy dwie osoby maja to samo pierwsze imie
+        w roznych sekcjach, ten zapasowy klucz jest pomijany (niejednoznaczny)
+        - wtedy trzeba wybrac/wpisac pelne imie i nazwisko. UWAGA: jesli ktos
+        jest wpisywany innym imieniem/pseudonimem niz w KOS (np. "Anastazja"
+        w programie a "Anastasiia Verchyk" na stronie), dopasowanie sie nie
+        uda - trzeba albo wybrac podpowiedz z listy, albo ujednolicic imie
+        na stronie (Grafik pracy -> Zespol).
+        jest_kuchnia/jest_bar (lokalna tabelka "Funkcje pracownikow" w
+        Ustawieniach) sa tylko zapasowym zrodlem, gdy kogos nie ma na
+        liscie z KOS (np. KOS niedostepny)."""
+        self.lista_kelnerow = []; self.str_kuchnia = f"1 - {self.klucz_kuchnia.capitalize()}"; self.str_bar = f"17 - {self.klucz_bar.capitalize()}"
+        self.sekcja_kos_map = {}
+
+        pobrano_z_kos = False
+        try:
+            access_token = self._kos_access_token_swiezy()
+            if access_token:
+                status, dane = self._kos_http(
+                    "GET", f"{KOS_API_URL}/api/freyonator/pracownicy",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if status == 200 and isinstance(dane, dict):
+                    # Polaczenie z KOS zadzialalo - nawet gdy firma ma jeszcze
+                    # 0 pracownikow (nowy klient), NIE wolno wtedy spadac do
+                    # zapasowego szablon.xlsx. Ten plik to tylko lokalny
+                    # fallback na wypadek, gdy KOS jest niedostepny - a nie
+                    # dla "konto jeszcze bez pracownikow".
+                    pobrano_z_kos = True
+                    wykluczeni_kos = set()
+                    imiona_po_pierwszym = {}  # pierwsze imie (male) -> sekcja, albo False gdy niejednoznaczne (dwie osoby, rozne sekcje)
+                    for p in (dane.get("pracownicy") or []):
+                        imie = str(p.get("imie") or "").strip()
+                        if not imie:
+                            continue
+                        self.lista_kelnerow.append(imie)
+                        sekcja_p = p.get("sekcja")
+                        if sekcja_p in ("bar", "kuchnia"):
+                            self.sekcja_kos_map[imie.lower()] = sekcja_p
+                            # Zapasowy klucz po samym pierwszym imieniu (bez nazwiska) -
+                            # w Obecnosciach ludzie czesto wpisuja/wybieraja tylko imie
+                            # (np. "Daniel" zamiast pelnego "Daniel Belavezha"). Gdy dwie
+                            # osoby maja to samo pierwsze imie w roznych sekcjach (np. dwaj
+                            # "Michal"), klucz zostaje wylaczony (False), zeby nie zgadywac.
+                            pierwsze = imie.split()[0].lower() if imie.split() else ""
+                            if pierwsze:
+                                if pierwsze not in imiona_po_pierwszym:
+                                    imiona_po_pierwszym[pierwsze] = sekcja_p
+                                elif imiona_po_pierwszym[pierwsze] != sekcja_p:
+                                    imiona_po_pierwszym[pierwsze] = False
+                        if p.get("wykluczony_z_napiwkow"):
+                            wykluczeni_kos.add(imie.lower())
+                    for pierwsze, sekcja_p in imiona_po_pierwszym.items():
+                        if sekcja_p and pierwsze not in self.sekcja_kos_map:
+                            self.sekcja_kos_map[pierwsze] = sekcja_p
+                    self.pracownicy_wykluczeni_kos = wykluczeni_kos
+        except Exception:
+            pobrano_z_kos = False
+
+        if not pobrano_z_kos:
+            plik = self.get_plik_docelowy(); plik = plik if os.path.exists(plik) else self.sciezka(self.szablon_plik)
+            if os.path.exists(plik):
+                try:
+                    wb = openpyxl.load_workbook(plik, data_only=True); ws = wb.active
+                    for row in range(419, 450):
+                        nr, imie = ws[f"D{row}"].value, ws[f"E{row}"].value
+                        if imie and isinstance(imie, str) and len(imie.strip()) > 1:
+                            wpis = f"{int(nr)} - {imie.strip()}" if nr is not None else imie.strip()
+                            self.lista_kelnerow.append(wpis)
+                            if self.klucz_kuchnia.lower() in imie.lower(): self.str_kuchnia = wpis
+                            elif self.klucz_bar.lower() in imie.lower(): self.str_bar = wpis
+                    wb.close()
+                except Exception: pass
+        if not self.lista_kelnerow: self.lista_kelnerow = [self.str_kuchnia, self.str_bar, "Wybierz/Wpisz..."]
+        self.lista_kelnerow_raport = [w for w in self.lista_kelnerow if w != "Wybierz/Wpisz..."]
+        self._rebuduj_tabele_funkcji_pracownikow()
+        if hasattr(self, 'osoba_cb'): self.osoba_cb['values'] = self.lista_kelnerow_raport
+        if hasattr(self, 'pods_pracownik_cb'): self.pods_pracownik_cb['values'] = self.lista_kelnerow_raport
+        for cb, sekcja_cb, od_e, do_e, lbl_g in getattr(self, 'wiersze_obecnosci', []):
+            cb['values'] = self.lista_kelnerow
+        if hasattr(self, 'usun_pracownik_cb'): self.usun_pracownik_cb['values'] = self.lista_kelnerow
+        self.wyczysc_formularz()
+
+    def dodaj_pracownika_do_excela(self):
+        imie = self.nowy_pracownik_var.get().strip()
+        if not imie:
+            return messagebox.showwarning("Wymagane pole", "Podaj imię i nazwisko pracownika!")
+        funkcja = self.nowy_pracownik_funkcja_var.get()
+        plik = self.get_plik_docelowy(); plik = plik if os.path.exists(plik) else self.sciezka(self.szablon_plik)
+        if not os.path.exists(plik):
+            return messagebox.showerror("Błąd", f"Nie znaleziono pliku:\n{plik}")
+        try:
+            wb = openpyxl.load_workbook(plik); ws = wb.active
+            wolny_wiersz, maks_nr = None, 0
+            for row in range(419, 450):
+                imie_ist, nr_ist = ws[f"E{row}"].value, ws[f"D{row}"].value
+                if isinstance(nr_ist, (int, float)): maks_nr = max(maks_nr, int(nr_ist))
+                if wolny_wiersz is None and (not imie_ist or not str(imie_ist).strip()): wolny_wiersz = row
+            if wolny_wiersz is None:
+                wb.close()
+                return messagebox.showerror("Brak miejsca", "Lista pracowników w Excelu jest pełna (wiersze 419-450).")
+            ws[f"D{wolny_wiersz}"] = maks_nr + 1
+            ws[f"E{wolny_wiersz}"] = imie
+            wb.save(plik); wb.close()
+        except Exception as e:
+            return messagebox.showerror("Błąd zapisu", str(e))
+
+        if funkcja == "Kuchnia":
+            lista = [n.strip() for n in self.pracownicy_kuchnia.split(",") if n.strip()]
+            if imie not in lista: lista.append(imie)
+            self.pracownicy_kuchnia = ", ".join(lista)
+            if hasattr(self, "pracownicy_kuchnia_var"): self.pracownicy_kuchnia_var.set(self.pracownicy_kuchnia)
+        elif funkcja == "Bar":
+            lista = [n.strip() for n in self.pracownicy_bar.split(",") if n.strip()]
+            if imie not in lista: lista.append(imie)
+            self.pracownicy_bar = ", ".join(lista)
+            if hasattr(self, "pracownicy_bar_var"): self.pracownicy_bar_var.set(self.pracownicy_bar)
+
+        self._zapisz_json_ustawien()
+        self.nowy_pracownik_var.set("")
+        self.odswiez_liste_pracownikow()
+        messagebox.showinfo("Dodano", f"Dodano pracownika: {imie} ({funkcja})")
+
+    def usun_pracownika_z_excela(self):
+        wpis = self.usun_pracownik_var.get().strip()
+        if not wpis or wpis in ("Wybierz/Wpisz...",):
+            return messagebox.showwarning("Wymagane pole", "Wybierz pracownika do usunięcia!")
+        imie = wpis.split(" - ", 1)[1].strip() if " - " in wpis else wpis.strip()
+        if not messagebox.askyesno("Potwierdzenie", f"Czy na pewno usunąć pracownika:\n{imie}?"):
+            return
+        plik = self.get_plik_docelowy(); plik = plik if os.path.exists(plik) else self.sciezka(self.szablon_plik)
+        if not os.path.exists(plik):
+            return messagebox.showerror("Błąd", f"Nie znaleziono pliku:\n{plik}")
+        try:
+            wb = openpyxl.load_workbook(plik); ws = wb.active
+            usunieto = False
+            for row in range(419, 450):
+                imie_ist = ws[f"E{row}"].value
+                if imie_ist and str(imie_ist).strip().lower() == imie.lower():
+                    ws[f"D{row}"] = None
+                    ws[f"E{row}"] = None
+                    usunieto = True
+                    break
+            if not usunieto:
+                wb.close()
+                return messagebox.showerror("Nie znaleziono", f"Nie znaleziono pracownika '{imie}' w arkuszu Excel.")
+            wb.save(plik); wb.close()
+        except Exception as e:
+            return messagebox.showerror("Błąd zapisu", str(e))
+        for attr, widget_attr in [("pracownicy_kuchnia", "pracownicy_kuchnia_var"), ("pracownicy_bar", "pracownicy_bar_var")]:
+            lista = [n.strip() for n in getattr(self, attr, "").split(",") if n.strip()]
+            if imie in lista:
+                lista.remove(imie)
+                setattr(self, attr, ", ".join(lista))
+                if hasattr(self, widget_attr): getattr(self, widget_attr).set(getattr(self, attr))
+        self._zapisz_json_ustawien()
+        self.odswiez_liste_pracownikow()
+        if hasattr(self, 'usun_pracownik_cb'):
+            self.usun_pracownik_cb['values'] = self.lista_kelnerow
+        self.usun_pracownik_var.set("")
+        messagebox.showinfo("Usunięto", f"Usunięto pracownika: {imie}")
+
+    def autocomplete_pracownik(self, event, cb, lista=None):
+        if event.keysym in ('Up', 'Down', 'Left', 'Right', 'Return', 'Tab', 'Escape'): return
+        baza = self.lista_kelnerow if lista is None else lista
+        wpis = cb.get()
+        dopasowania = baza if wpis == '' else [i for i in baza if wpis.lower() in i.lower()]
+        cb['values'] = dopasowania
+        if wpis and dopasowania:
+            cb.event_generate('<Down>')
+
+    def obsluga_typu_pracownika(self, event, cb, pola, serwis_ent):
+        wartosc = cb.get().lower()
+        if self._wiersz_to_kuchnia(wartosc):
+            for p in pola: p.config(state="disabled")
+            serwis_ent.config(state="normal")
+        elif self._wiersz_to_bar(wartosc):
+            for p in pola: p.config(state="normal")
+            serwis_ent.delete(0, tk.END); serwis_ent.insert(0, "0.0"); serwis_ent.config(state="disabled")
+        else:
+            for p in pola: p.config(state="normal")
+            serwis_ent.config(state="normal")
+        self.weryfikuj_dane()
+
+def _pokaz_ekran_ladowania(root):
+    """Krotki ekran powitalny na starcie programu - gra slow: nazwa
+    "KawiarniaOS" przeczytana na glos brzmi jak ostrzezenie "Kawiarnia...
+    OSY!" (klasyczny letni problem kazdej kawiarni z cukrem na blacie),
+    wiec puszczamy kilka latajacych os, zanim pokaze sie glowne okno."""
+    splash = tk.Toplevel(root)
+    splash.overrideredirect(True)
+    splash.configure(bg="#1E2433")
+    szer, wys = 440, 230
+    x = (splash.winfo_screenwidth() - szer) // 2
+    y = (splash.winfo_screenheight() - wys) // 2
+    splash.geometry(f"{szer}x{wys}+{x}+{y}")
+
+    tk.Label(
+        splash, text="☕ KawiarniaOS", font=("Helvetica", 24, "bold"),
+        bg="#1E2433", fg="white",
+    ).pack(pady=(32, 6))
+    tk.Label(
+        splash, text="Kawiarnia... OSY! 🐝  (lecą po cukier, nie po dane)",
+        # (ekran ladowania to funkcja modulowa, bez "self" - stad literal
+        # zamiast self.kolor_header_muted, celowo, nie przez pomylke)
+        font=("Helvetica", 11, "italic"), bg="#1E2433", fg="#8B96AD",
+    ).pack(pady=(0, 16))
+
+    canvas = tk.Canvas(splash, width=szer, height=50, bg="#1E2433", highlightthickness=0)
+    canvas.pack()
+    osy = [
+        canvas.create_text(-20 - i * 70, 25, text="🐝", font=("Helvetica", 20))
+        for i in range(3)
+    ]
+
+    stan = {"zakonczono": False}
+
+    def zamknij():
+        if stan["zakonczono"]:
+            return
+        stan["zakonczono"] = True
+        try:
+            splash.destroy()
+        except tk.TclError:
+            pass
+
+    def lec(klatka=0):
+        if stan["zakonczono"]:
+            return
+        for osa in osy:
+            canvas.move(osa, 7, 0)
+        if klatka < 65:
+            splash.after(16, lambda: lec(klatka + 1))
+        else:
+            zamknij()
+
+    splash.after(100, lec)
+    splash.after(1800, zamknij)  # bezpiecznik, gdyby animacja sie zacieла
+    splash.update()
+    splash.wait_window(splash)
+
+
+def _globalny_handler_bledow(root, app):
+    """Bezpiecznik na nieoczekiwane bledy w obsludze przyciskow/zdarzen Tk.
+    Domyslnie Tkinter w takiej sytuacji NIC nie wyswietla uzytkownikowi - po
+    cichu wypisuje traceback na stderr/stdout i konczy obsluge zdarzenia,
+    co z perspektywy uzytkownika wyglada jak klikniecie, ktore nic nie robi
+    (np. "Zapisz obecnosci" / "Podziel serwis" bez zadnego komunikatu). Ten
+    handler zamiast tego: dociaga okno na wierzch, pokazuje czerwone okno z
+    opisem bledu i dopisuje go do log_sieci.txt, zeby bylo wiadomo co
+    konkretnie poszlo nie tak."""
+    def obsluz(exc_type, exc_value, exc_tb):
+        import traceback as _tb
+        szczegoly = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            app._log_siec(f"BLAD (nieobsluzony w interfejsie): {exc_type.__name__}: {exc_value}\n{szczegoly}")
+        except Exception:
+            pass
+        try:
+            root.lift()
+            root.attributes("-topmost", True)
+            root.after(200, lambda: root.attributes("-topmost", False))
+            root.focus_force()
+        except Exception:
+            pass
+        try:
+            messagebox.showerror(
+                "Nieoczekiwany błąd - akcja NIE została wykonana",
+                "Coś poszło nie tak i ostatnia akcja (np. zapis/podział) najpewniej "
+                "NIE została wykonana.\n\n"
+                f"{exc_type.__name__}: {exc_value}\n\n"
+                "Szczegóły zapisano do log_sieci.txt. Spróbuj ponownie; jeśli się "
+                "powtarza, przekaż ten komunikat.",
+            )
+        except Exception:
+            pass
+    root.report_callback_exception = obsluz
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+    _pokaz_ekran_ladowania(root)
+    root.deiconify()
+    app = KawiarniaOSApp(root)
+    _globalny_handler_bledow(root, app)
+    try:
+        root.mainloop()
