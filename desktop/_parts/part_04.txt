@@ -1,0 +1,690 @@
+        try:
+            rok = int(self.pods_rok_var.get()); miesiac = int(self.pods_miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status_o, dane_o = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/obecnosci?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status_o != 200:
+            szczegol = (dane_o.get("error") if isinstance(dane_o, dict) else "") or ""
+            return messagebox.showerror("Błąd", f"Nie udało się wczytać Obecności z KOS.\n\n{szczegol}")
+
+        status_r, dane_r = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status_r != 200:
+            szczegol = (dane_r.get("error") if isinstance(dane_r, dict) else "") or ""
+            return messagebox.showerror("Błąd", f"Nie udało się wczytać Rozliczeń z KOS.\n\n{szczegol}")
+
+        folder = filedialog.askdirectory(title="Wybierz folder do zapisu eksportu")
+        if not folder:
+            return
+
+        try:
+            plik_obc = self._eksportuj_obecnosci_xlsx(folder, rok, miesiac, dane_o.get("pracownicy") or [])
+            plik_rozl = self._eksportuj_rozliczenie_xlsx(folder, rok, miesiac, dane_r.get("pracownicy") or [], dane_r.get("weryfikacje") or [])
+        except Exception as e:
+            return messagebox.showerror("Błąd eksportu", str(e))
+
+        messagebox.showinfo(
+            "Eksport zakończony",
+            f"Zapisano w folderze:\n{folder}\n\n• {os.path.basename(plik_obc)}\n• {os.path.basename(plik_rozl)}",
+        )
+
+    def eksportuj_rozliczenie_miesiaca_kos(self):
+        """Eksportuje TYLKO plik Rozliczenia miesiaca (bez Obecnosci) - skrot
+        dostepny bezposrednio w zakladce "Rozliczenie Dnia" (korzysta z roku
+        i miesiaca wpisanych tutaj, self.rok_var/self.miesiac_var), zeby nie
+        trzeba bylo w tym celu przechodzic do zakladki Obecnosci - patrz
+        eksportuj_pliki_miesiaca_kos, ktory eksportuje oba pliki naraz."""
+        try:
+            rok = int(self.rok_var.get()); miesiac = int(self.miesiac_var.get())
+            if not (1 <= miesiac <= 12): raise ValueError
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy rok/miesiąc.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status_r, dane_r = self._kos_http(
+            "GET", f"{KOS_API_URL}/api/freyonator/dzien-rozliczenia?rok={rok}&miesiac={miesiac}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status_r != 200:
+            szczegol = (dane_r.get("error") if isinstance(dane_r, dict) else "") or ""
+            return messagebox.showerror("Błąd", f"Nie udało się wczytać Rozliczeń z KOS.\n\n{szczegol}")
+
+        folder = filedialog.askdirectory(title="Wybierz folder do zapisu eksportu")
+        if not folder:
+            return
+
+        try:
+            plik_rozl = self._eksportuj_rozliczenie_xlsx(folder, rok, miesiac, dane_r.get("pracownicy") or [], dane_r.get("weryfikacje") or [])
+        except Exception as e:
+            return messagebox.showerror("Błąd eksportu", str(e))
+
+        messagebox.showinfo("Eksport zakończony", f"Zapisano:\n{plik_rozl}")
+
+    def _eksportuj_obecnosci_xlsx(self, folder, rok, miesiac, wiersze):
+        """Buduje plik Obecnosci w tym samym stylu co utworz_plik_obecnosci /
+        _style_obecnosci (caly szkielet roku, kolorowe sekcje bar/kuchnia,
+        wyroznione weekendy, wiersze SUMA), wypelniony danymi z bazy KOS dla
+        wybranego miesiaca - rozwiniety jest eksportowany miesiac."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "OBECNOSCI"
+        ws.cell(row=self.NAGLOWEK_OBC, column=1, value="Dzień")
+        for m in range(1, 13):
+            etykieta_r = self.wiersz_obecnosci(rok, m, 1) - 1
+            ws.cell(row=etykieta_r, column=1, value=self.MIESIACE_OBC[m - 1])
+            for d in range(1, self.dni_w_miesiacu(rok, m) + 1):
+                ws.cell(row=self.wiersz_obecnosci(rok, m, d), column=1, value=d)
+            ws.cell(row=self.wiersz_suma_miesiaca(rok, m), column=1, value="SUMA")
+
+        kolumny = {}
+        for w in wiersze:
+            nazwa = str(w.get("pracownik") or "").strip()
+            if not nazwa:
+                continue
+            sekcja = str(w.get("sekcja") or "bar").strip().lower()
+            if nazwa not in kolumny:
+                kolumny[nazwa] = self.dodaj_kolumne_pracownika_obecnosci(ws, rok, nazwa, sekcja)
+            od_col, do_col = kolumny[nazwa]
+            data_str = w.get("data") or ""
+            try:
+                _, _, dd = data_str.split("-"); dzien = int(dd)
+            except Exception:
+                continue
+            r = self.wiersz_obecnosci(rok, miesiac, dzien)
+            if w.get("godz_od") is not None: ws.cell(row=r, column=od_col, value=w.get("godz_od"))
+            if w.get("godz_do") is not None: ws.cell(row=r, column=do_col, value=w.get("godz_do"))
+
+        self._style_obecnosci(ws, rok, miesiac_do_rozwiniecia=miesiac)
+        miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1].capitalize()
+        plik = os.path.join(folder, f"Obecnosci_{rok}_{miesiac:02d}_{miesiac_nazwa}_eksport.xlsx")
+        wb.save(plik)
+        wb.close()
+        return plik
+
+    def _eksportuj_rozliczenie_xlsx(self, folder, rok, miesiac, wiersze, weryfikacje):
+        """Buduje plik Rozliczenia miesiaca z kolorami i ukladem kolumn
+        dopasowanymi do dawnego, recznego szablon.xlsx (zweryfikowane na
+        realnych danych z pazdziernika 2026 i na zrzucie ekranu oryginalu od
+        Jakuba): po Data/Nr/Imie i Nazwisko/SERWIS (samodzielna kolumna)
+        nastepuja trzy rownolegle 6-kolumnowe bloki FISKAL / FAKTURY / RAZEM
+        (Gotowka, Karty kredytowe, Przelewy, Foodsi, Serwis, Razem), kolorowane
+        pastelowo blokami (patrz _styl_tabela_rozliczenia) - bladozielony dla
+        FISKAL/FAKTURY, bladoniebiesko-zielony dla RAZEM, bladoniebieski dla
+        kolumn wiodacych (Data/Nr/Imie/SERWIS), zgodnie z oryginalem. Kolumna
+        "SERWIS" przed blokiem FISKAL jest zawsze rowna wartosci Serwis w
+        bloku FISKAL tego wiersza (to zdublowane pole istnialo w oryginalnym
+        szablonie jako osobna kolumna wejsciowa). Blok FAKTURY jest w tych
+        danych w praktyce zawsze zerowy (624 niezerowe komorki FISKAL vs 8
+        niezerowych komorek FAKTURY na caly rok), bo cala sprzedaz jest
+        fiskalizowana - wiec FAKTURY jest tu wypelniany zerami, a RAZEM =
+        FISKAL, bez zmyslania zadnych liczb (to jest realny stan, nie
+        uproszczenie). Kolumny "Karta Mob."/"Karta Kasa" (rozbicie nieobecne
+        w starym szablonie, ale dostepne w KOS od migracji) oraz VIP/Straty i
+        Zdano sa dopisane jako dodatkowe kolumny na koncu, zeby nie zgubic
+        danych, ktorych stary szablon nie mial. Stale formuly CHOOSE() i
+        sztywna lista 30 pracownikow z wierszy 419-448 starego szablonu
+        rowniez nie sa odtwarzane - eksport dziala dla dowolnej liczby/listy
+        pracownikow z KOS, nie tylko dla gory 30 zapisanych na sztywno w
+        starym pliku."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "ROZLICZENIA"
+
+        sub_naglowki = ["Gotówka", "Karty kredytowe", "Przelewy", "Foodsi", "Serwis", "Razem"]
+        bloki = ["FISKAL", "FAKTURY", "RAZEM"]
+        stale_naglowki = ["Data", "Nr", "Imię i Nazwisko", "SERWIS"]
+        dodatkowe_naglowki = ["Karta Mob.", "Karta Kasa", "VIP/Straty", "Zdano"]
+
+        kol = 1
+        for nazwa in stale_naglowki:
+            ws.cell(row=1, column=kol, value=nazwa)
+            ws.merge_cells(start_row=1, start_column=kol, end_row=2, end_column=kol)
+            kol += 1
+        for blok in bloki:
+            poczatek = kol
+            ws.cell(row=1, column=poczatek, value=blok)
+            for sub in sub_naglowki:
+                ws.cell(row=2, column=kol, value=sub)
+                kol += 1
+            ws.merge_cells(start_row=1, start_column=poczatek, end_row=1, end_column=kol - 1)
+        for nazwa in dodatkowe_naglowki:
+            ws.cell(row=1, column=kol, value=nazwa)
+            ws.merge_cells(start_row=1, start_column=kol, end_row=2, end_column=kol)
+            kol += 1
+        liczba_kolumn = kol - 1
+
+        for w in sorted(wiersze, key=lambda x: (x.get("data") or "", x.get("nr_pracownika") or 0)):
+            gotowka = w.get("gotowka") or 0
+            karta_mob = w.get("karta_mob") or 0
+            karta_kasa = w.get("karta_kasa") or 0
+            karty_razem = karta_mob + karta_kasa
+            przelewy = w.get("przelewy") or 0
+            foodsi = w.get("foodsi") or 0
+            serwis = w.get("serwis") or 0
+            razem_fiskal = w.get("razem")
+            if razem_fiskal is None:
+                razem_fiskal = gotowka + karty_razem + przelewy + foodsi + serwis
+            ws.append([
+                w.get("data"), w.get("nr_pracownika"), w.get("pracownik"), serwis,
+                # FISKAL
+                gotowka, karty_razem, przelewy, foodsi, serwis, razem_fiskal,
+                # FAKTURY (nie wystepuje per-kelner w KOS - w praktyce zawsze 0, patrz docstring)
+                0, 0, 0, 0, 0, 0,
+                # RAZEM = FISKAL + FAKTURY = FISKAL
+                gotowka, karty_razem, przelewy, foodsi, serwis, razem_fiskal,
+                # dodatkowe kolumny z KOS, ktorych stary szablon nie mial
+                karta_mob, karta_kasa, w.get("vip"), w.get("zdano"),
+            ])
+        self._styl_tabela_rozliczenia(ws, liczba_kolumn, liczba_wierszy_naglowka=2)
+
+        ws2 = wb.create_sheet("WERYFIKACJA DNIA")
+        naglowki2 = ["Data", "Fiskal", "Faktury", "Karta mob. (raport)", "Karta kasa (raport)", "Liczba paragonów", "Gotówka sprawdzona", "Rozlicza", "Komentarz"]
+        for i, n in enumerate(naglowki2, start=1):
+            ws2.cell(row=1, column=i, value=n)
+        for w in sorted(weryfikacje, key=lambda x: x.get("data") or ""):
+            ws2.append([
+                w.get("data"), w.get("fiskal"), w.get("faktury"), w.get("karta_mob_raport"), w.get("karta_kasa_raport"),
+                w.get("liczba_paragonow"), w.get("gotowka_sprawdzona"), w.get("osoba"), w.get("komentarz"),
+            ])
+        self._styl_tabela_eksportu(ws2, len(naglowki2))
+
+        miesiac_nazwa = self.MIESIACE_OBC[miesiac - 1].capitalize()
+        plik = os.path.join(folder, f"Rozliczenie_{rok}_{miesiac:02d}_{miesiac_nazwa}_eksport.xlsx")
+        wb.save(plik)
+        wb.close()
+        return plik
+
+    def _styl_tabela_rozliczenia(self, ws, liczba_kolumn, liczba_wierszy_naglowka=2):
+        """Styl arkusza ROZLICZENIA dopasowany kolorystycznie do dawnego,
+        recznego szablon.xlsx (sprobkowane z realnego zrzutu ekranu od
+        Jakuba): pastelowe bloki kolorow zamiast ciemnego naglowka uzywanego
+        w _styl_tabela_eksportu (ktory zostaje bez zmian dla pozostalych
+        eksportow - Obecnosci, Weryfikacja Dnia). Kolumny 1-4 (Data/Nr/Imie i
+        Nazwisko/SERWIS) - bladoniebieski; blok FISKAL - bladozielony; blok
+        FAKTURY - oliwkowo-zielony; blok RAZEM - bladoniebiesko-zielony;
+        dodatkowe kolumny (Karta Mob./Karta Kasa/VIP/Zdano, ktorych stary
+        szablon nie mial) - neutralny jasnoszary. Kolor tla jest taki sam w
+        naglowku i w wierszach danych (tak jak w oryginale), zamiast
+        naprzemiennych "zebry"."""
+        kol_wiodace = "BFDDE7"
+        kol_fiskal = "ECF1E0"
+        kol_faktury = "DCE8C8"
+        kol_razem = "D7E3EC"
+        kol_dodatkowe = "F3F4F6"
+        tekst_kolor = "1F2937"
+
+        def kolor_dla_kolumny(c):
+            if 1 <= c <= 4:
+                return kol_wiodace
+            if 5 <= c <= 10:
+                return kol_fiskal
+            if 11 <= c <= 16:
+                return kol_faktury
+            if 17 <= c <= 22:
+                return kol_razem
+            return kol_dodatkowe
+
+        cienka = Side(style="thin", color="c7ccd1")
+        ramka = Border(left=cienka, right=cienka, top=cienka, bottom=cienka)
+        for r in range(1, liczba_wierszy_naglowka + 1):
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.font = Font(bold=True, color=tekst_kolor, size=10)
+                kom.fill = PatternFill("solid", fgColor=kolor_dla_kolumny(c))
+                kom.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                kom.border = ramka
+        for c in range(1, liczba_kolumn + 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 13
+        for r in range(liczba_wierszy_naglowka + 1, ws.max_row + 1):
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.font = Font(color=tekst_kolor, size=10)
+                kom.fill = PatternFill("solid", fgColor=kolor_dla_kolumny(c))
+                kom.border = ramka
+                kom.alignment = Alignment(horizontal="center" if c > 3 else "left", vertical="center")
+        ws.freeze_panes = ws.cell(row=liczba_wierszy_naglowka + 1, column=1).coordinate
+
+    def _styl_tabela_eksportu(self, ws, liczba_kolumn, liczba_wierszy_naglowka=1):
+        """Prosty, czytelny styl tabeli eksportu (pogrubiony ciemny naglowek,
+        obramowanie, naprzemienne tlo wierszy, zamrozony naglowek) - ten sam
+        jezyk wizualny co plik Obecnosci. liczba_wierszy_naglowka=2 obsluguje
+        naglowek dwuwierszowy (bloki FISKAL/FAKTURY/RAZEM nad podkolumnami w
+        eksporcie Rozliczenia) - domyslnie 1 wiersz, jak dotychczas."""
+        cienka = Side(style="thin", color="d1d5db")
+        ramka = Border(left=cienka, right=cienka, top=cienka, bottom=cienka)
+        for r in range(1, liczba_wierszy_naglowka + 1):
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.font = Font(bold=True, color="ffffff")
+                kom.fill = PatternFill("solid", fgColor="374151")
+                kom.alignment = Alignment(horizontal="center", vertical="center")
+        for c in range(1, liczba_kolumn + 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(c)].width = 14
+        for r in range(liczba_wierszy_naglowka + 1, ws.max_row + 1):
+            tlo = "ffffff" if r % 2 == 0 else "f8fafc"
+            for c in range(1, liczba_kolumn + 1):
+                kom = ws.cell(row=r, column=c)
+                kom.fill = PatternFill("solid", fgColor=tlo)
+                kom.border = ramka
+        ws.freeze_panes = ws.cell(row=liczba_wierszy_naglowka + 1, column=1).coordinate
+
+    def wczytaj_dzien_obecnosci(self):
+        """Wczytuje obecnosci dnia z bazy KOS (nie z lokalnego Excela - patrz
+        app/api/freyonator/obecnosci). Od Fazy 2 migracji zakladka
+        "Obecnosci" juz NIE czyta zadnego pliku .xlsx."""
+        try:
+            dz = int(self.obc_dzien_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy dzień.")
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        status, dane = self._kos_http(
+            "GET",
+            f"{KOS_API_URL}/api/freyonator/obecnosci?rok={int(self.obc_rok_var.get())}&miesiac={int(self.obc_miesiac_var.get())}&dzien={dz}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się wczytać dnia z KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd wczytywania", tresc)
+
+        while self.wiersze_obecnosci: self.usun_wiersz_obecnosci()
+        pracownicy = dane.get("pracownicy") if isinstance(dane, dict) else []
+        for p in (pracownicy or []):
+            self.dodaj_wiersz_obecnosci(
+                p.get("pracownik") or "",
+                p.get("sekcja") or "bar",
+                self.dziesietna_na_godz(p.get("godz_od")),
+                self.dziesietna_na_godz(p.get("godz_do")),
+            )
+        if not pracownicy:
+            self.dodaj_wiersz_obecnosci(); self.dodaj_wiersz_obecnosci()
+        self._toast("Wczytano obecności dnia" if pracownicy else "Brak zapisanych obecności dla tego dnia", typ="sukces")
+
+    def wykonaj_akcje_obecnosci(self):
+        """Rozgalezia dropdown "Edytuj dzien / Usun dzien" (patrz
+        buduj_zakladke_obecnosci) do istniejacego wczytaj_dzien_obecnosci
+        albo do nowego usun_dzien_obecnosci."""
+        if self.obc_akcja_var.get() == "Usuń dzień":
+            self.usun_dzien_obecnosci()
+        else:
+            self.wczytaj_dzien_obecnosci()
+
+    def usun_dzien_obecnosci(self):
+        """Usuwa WSZYSTKIE zapisane obecnosci wybranego dnia z bazy KOS.
+        Wysyla POST z pusta lista p_pracownicy - endpoint
+        app/api/freyonator/obecnosci i tak najpierw robi DELETE calego
+        dnia przed ewentualnym insertem (patrz route.ts), wiec pusta lista
+        = czyste usuniecie, bez zadnych zmian po stronie API."""
+        try:
+            dz = int(self.obc_dzien_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy dzień.")
+
+        try:
+            msc = int(self.obc_miesiac_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy miesiąc.")
+
+        if not messagebox.askyesno(
+            "Usuń dzień",
+            f"Na pewno usunąć WSZYSTKIE zapisane obecności dla "
+            f"{dz:02d}.{msc:02d}.{self.obc_rok_var.get()}?\n\n"
+            "Tego nie da się cofnąć.",
+        ):
+            return
+
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.",
+            )
+
+        body = {"p_rok": int(self.obc_rok_var.get()), "p_miesiac": msc, "p_dzien": dz, "p_pracownicy": []}
+        status, dane = self._kos_http(
+            "POST",
+            f"{KOS_API_URL}/api/freyonator/obecnosci",
+            body=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się usunąć dnia w KOS."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd usuwania", tresc)
+
+        self.wyczysc_obecnosci()
+        self._toast("Usunięto obecności dnia", typ="sukces")
+
+    def zapisz_dzien_obecnosci(self):
+        """Zapisuje obecnosci dnia bezposrednio do bazy KOS (nie do lokalnego
+        Excela - patrz app/api/freyonator/obecnosci). Od Fazy 2 migracji
+        zakladka "Obecnosci" juz NIE tworzy/modyfikuje zadnego pliku .xlsx."""
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return messagebox.showerror(
+                "Brak połączenia z KOS",
+                "Nie udało się połączyć z kontem KOS.\n"
+                "Sprawdź internet albo zaloguj się ponownie w Ustawieniach → Konto KOS.\n"
+                "Dzień NIE został zapisany.",
+            )
+        try:
+            dz = int(self.obc_dzien_var.get())
+        except ValueError:
+            return messagebox.showerror("Błąd", "Nieprawidłowy dzień.")
+
+        pracownicy = []
+        for cb, sekcja_cb, od_e, do_e, lbl_g in self.wiersze_obecnosci:
+            nazwa = cb.get().strip()
+            if not nazwa: continue
+            godz_od = self.godz_na_dziesietna(od_e.get())
+            godz_do = self.godz_na_dziesietna(do_e.get())
+            godziny = 0.0
+            if godz_od is not None and godz_do is not None:
+                godziny = godz_do - godz_od
+                if godziny < 0:
+                    # Zmiana przechodzaca przez polnoc (np. 20:00-01:00) - bez
+                    # tego godziny wyszlyby ujemne i pracownik znikalby po cichu
+                    # z podzialu napiwkow/serwisu (filtr "godz > 0" nizej).
+                    godziny += 24.0
+            pracownicy.append({
+                "pracownik": nazwa, "sekcja": sekcja_cb.get() or "bar",
+                "godz_od": godz_od, "godz_do": godz_do, "godziny": godziny,
+            })
+
+        # Jakub: "sprawdz wgl czy dobrze zapisuje obecnosci" - zgloszone
+        # "zmiany sie zdublowaly". Najbardziej prawdopodobne zrodlo: dwa
+        # wiersze z ta sama osoba tego samego dnia. API robi zwykly insert
+        # (bez laczenia/upsertu po pracowniku), wiec takie dwa wiersze
+        # zapisalyby sie jako DWA osobne rekordy i godziny policzylyby sie
+        # podwojnie w podsumowaniu/podziale napiwkow. Przerywamy zapis
+        # zamiast cicho wyslac duplikat.
+        nazwy_widziane = set()
+        duplikaty = set()
+        for wpis in pracownicy:
+            _, nazwa_czysta = self._rozbij_nr_nazwe(wpis["pracownik"])
+            klucz = (nazwa_czysta or wpis["pracownik"]).strip().lower()
+            if klucz in nazwy_widziane:
+                duplikaty.add(wpis["pracownik"])
+            nazwy_widziane.add(klucz)
+        if duplikaty:
+            return messagebox.showerror(
+                "Zduplikowany pracownik",
+                "Ta sama osoba jest wpisana w więcej niż jednym wierszu: "
+                + ", ".join(sorted(duplikaty))
+                + ".\n\nUsuń albo połącz te wiersze przed zapisem - inaczej w bazie "
+                "powstałyby dwa osobne wpisy i godziny policzyłyby się podwójnie.",
+            )
+
+        body = {"p_rok": int(self.obc_rok_var.get()), "p_miesiac": int(self.obc_miesiac_var.get()), "p_dzien": dz, "p_pracownicy": pracownicy}
+        if getattr(self, "btn_zapisz_obecnosci", None):
+            self.btn_zapisz_obecnosci.ustaw_aktywny(False)
+        try:
+            status, dane = self._kos_http(
+                "POST",
+                f"{KOS_API_URL}/api/freyonator/obecnosci",
+                body=body,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+            )
+        finally:
+            if getattr(self, "btn_zapisz_obecnosci", None):
+                self.btn_zapisz_obecnosci.ustaw_aktywny(True)
+
+        if status != 200:
+            szczegol = (dane.get("error") if isinstance(dane, dict) else "") or ""
+            tresc = "Nie udało się zapisać dnia w KOS. Dzień NIE został zapisany."
+            if status is None:
+                tresc += "\n\nBrak połączenia z internetem."
+            elif szczegol:
+                tresc += f"\n\n{szczegol}"
+            return messagebox.showerror("Błąd zapisu", tresc)
+
+        self._toast("Zapisano obecności dnia ✓", typ="sukces")
+
+    def pokaz_podsumowanie_miesiaca_obecnosci(self):
+        rok = self.obc_rok_var.get(); msc = self.obc_miesiac_var.get()
+        plik = self.get_plik_obecnosci()
+        self.txt_podsumowanie_godzin.config(state="normal")
+        self.txt_podsumowanie_godzin.delete("1.0", tk.END)
+        if not os.path.exists(plik):
+            self.txt_podsumowanie_godzin.insert("1.0", f"Plik {plik} jeszcze nie istnieje.")
+            self.txt_podsumowanie_godzin.config(state="disabled")
+            return
+        try:
+            pierwszy = self.wiersz_obecnosci(rok, msc, 1)
+            ostatni = self.wiersz_obecnosci(rok, msc, self.dni_w_miesiacu(rok, msc))
+            wb = openpyxl.load_workbook(plik, data_only=True)
+            ws = wb.active
+            mapa = self.mapuj_kolumny_obecnosci(ws)
+            wyniki = []
+            for klucz, (od_col, do_col, sekcja, nazwa) in mapa.items():
+                suma = 0.0
+                for r in range(pierwszy, ostatni + 1):
+                    ov = ws.cell(row=r, column=od_col).value
+                    dv = ws.cell(row=r, column=do_col).value
+                    if ov is not None and dv is not None:
+                        try: suma += float(dv) - float(ov)
+                        except (TypeError, ValueError): pass
+                if suma > 0:
+                    wyniki.append((nazwa, sekcja, suma))
+            wb.close()
+
+            miesiac_nazwa = self.MIESIACE_OBC[int(msc) - 1] if 1 <= int(msc) <= 12 else msc
+            linie = [f"GODZINY PRACY — {miesiac_nazwa} {rok}", ""]
+            if not wyniki:
+                linie.append("Brak zapisanych godzin w tym miesiącu.")
+            else:
+                for nazwa, sekcja, suma in sorted(wyniki, key=lambda x: (-x[2])):
+                    linie.append(f"  {nazwa} ({sekcja}): {suma:.2f}h")
+                linie.append("")
+                linie.append(f"RAZEM: {sum(s for _, _, s in wyniki):.2f}h")
+            self.txt_podsumowanie_godzin.insert("1.0", "\n".join(linie))
+        except Exception as e:
+            self.txt_podsumowanie_godzin.insert("1.0", f"Błąd: {e}")
+        self.txt_podsumowanie_godzin.config(state="disabled")
+
+    def weryfikuj_dane(self, *args):
+        calk_gotowka = 0.0; calk_sprawdz = 0.0; suma_razem = 0.0; suma_vip = 0.0; suma_kart_wpisy = 0.0
+        
+        for cb, vip_e, km_e, kk_e, prz_e, foo_e, serw_e, razem_e, lbl_g, sprawdz_e, lbl_r in self.wiersze_danych:
+            nazwa = cb.get().lower()
+            v, km, kk, prz, foo, r, spr = map(self.pobierz_float, [vip_e.get(), km_e.get(), kk_e.get(), prz_e.get(), foo_e.get(), razem_e.get(), sprawdz_e.get()])
+            suma_kart_wpisy += (km + kk)
+            if not self._wiersz_to_kuchnia(nazwa):
+                suma_razem += r; suma_vip += v
+                got = r - v - (km + kk + prz + foo)
+                calk_gotowka += got; calk_sprawdz += spr
+                lbl_g.config(text=f"{got:.2f}")
+                roz = spr - got
+                if spr == 0.0 and got == 0.0: lbl_r.config(text="0.00", fg=self.tekst_muted)
+                elif roz == 0: lbl_r.config(text="OK", fg=self.kolor_sukces)
+                elif roz > 0: lbl_r.config(text=f"+{roz:.2f}", fg="#7DD3FC")
+                else: lbl_r.config(text="---", fg=self.tekst_muted) # Ukrycie manka u pracownika
+            else:
+                lbl_g.config(text="---"); lbl_r.config(text="---", fg=self.tekst_muted)
+
+        croz = calk_sprawdz - calk_gotowka
+        self.lbl_gotowka_suma.config(text=f"CAŁK. OCZEKIWANA: {calk_gotowka:.2f} zł")
+        self.lbl_sprawdz_suma.config(text=f"SPRAWDZONO: {calk_sprawdz:.2f} zł")
+        if croz == 0 and calk_gotowka > 0: self.lbl_roznica_suma.config(text=f"RÓŻNICA W KASIE: OK", fg=self.kolor_sukces)
+        elif croz > 0: self.lbl_roznica_suma.config(text=f"RÓŻNICA W KASIE: +{croz:.2f} zł", fg="#7DD3FC")
+        else: self.lbl_roznica_suma.config(text=f"RÓŻNICA W KASIE: ---", fg=self.tekst_muted) # Ukrycie manka głównego
+            
+        self.lbl_suma_kart.config(text=f"Suma z kart wpisów: {suma_kart_wpisy:.2f} zł")
+        fisk, fakt, term_mob, term_kas = map(self.pobierz_float, [self.fiskal_var.get(), self.faktury_var.get(), self.raport_karta_mob_var.get(), self.raport_karta_kasa_var.get()])
+        term_suma = term_mob + term_kas
+        rfisk = round((suma_razem - suma_vip) - (fisk + fakt), 2)
+        rkart = round(suma_kart_wpisy - term_suma, 2)
+        msg = ""
+        if rfisk == 0 and rkart == 0: self.lbl_weryfikacja.config(text="Fiskalizacja i Terminale OK!", fg=self.kolor_sukces)
+        else:
+            if rfisk != 0: msg += f"Fiskal BŁĄD: {rfisk:.2f} | "
+            if rkart != 0: msg += f"Karty BŁĄD: {rkart:.2f}"
+            self.lbl_weryfikacja.config(text=msg, fg=self.kolor_blad)
+
+    def dodaj_wiersz(self, domyslny_pracownik=None):
+        if len(self.wiersze_danych) >= self.max_wierszy: return messagebox.showwarning("Limit", "Limit wierszy osiągnięty.")
+        wid = len(self.wiersze_danych) + 1
+        
+        _wiersz_tlo = self.karta_bg if wid % 2 else self._rozjasnij_kolor(self.karta_bg, 3)
+        _wej_kw = dict(relief="flat", highlightthickness=1, highlightbackground=self.karta_border, highlightcolor=self.kolor_akcent)
+
+        cb = ttk.Combobox(self.frame_mid, values=self._lista_kelnerow_bez_kuchni(), width=14); cb.grid(row=wid, column=0, padx=4, pady=4)
+        if domyslny_pracownik: cb.set(domyslny_pracownik)
+        cb.bind('<KeyRelease>', lambda e, c=cb: self.autocomplete_pracownik(e, c, self._lista_kelnerow_bez_kuchni()))
+        self._blokuj_scroll_na_combo(cb)
+        
+        vip = tk.Entry(self.frame_mid, width=8, bg=self.pole_ostrzezenie_bg, fg=self.pole_ostrzezenie_fg, insertbackground=self.pole_ostrzezenie_fg, **_wej_kw); vip.insert(0, "0.0"); vip.grid(row=wid, column=1, padx=4, pady=4)
+        kmob = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); kmob.insert(0, "0.0"); kmob.grid(row=wid, column=2, padx=4, pady=4)
+        kkasa = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); kkasa.insert(0, "0.0"); kkasa.grid(row=wid, column=3, padx=4, pady=4)
+        prz = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); prz.insert(0, "0.0"); prz.grid(row=wid, column=4, padx=4, pady=4)
+        foo = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); foo.insert(0, "0.0"); foo.grid(row=wid, column=5, padx=4, pady=4)
+        serw = tk.Entry(self.frame_mid, width=8, bg=self.pole_bg, fg=self.pole_fg, insertbackground=self.pole_fg, **_wej_kw); serw.insert(0, "0.0"); serw.grid(row=wid, column=6, padx=4, pady=4)
+        razem = tk.Entry(self.frame_mid, width=9, bg=self.pole_info_bg, fg=self.pole_info_fg, insertbackground=self.pole_info_fg, **_wej_kw); razem.insert(0, "0.0"); razem.grid(row=wid, column=7, padx=4, pady=4)
+        lbl_g = tk.Label(self.frame_mid, text="0.00", font=(self.czcionka_nazwa, 9, "bold"), fg="#E2E8F0", bg=_wiersz_tlo, width=8); lbl_g.grid(row=wid, column=8, padx=4, pady=4, sticky="nsew")
+        spr = tk.Entry(self.frame_mid, width=9, bg=self.pole_sukces_bg, fg=self.pole_sukces_fg, insertbackground=self.pole_sukces_fg, **_wej_kw); spr.insert(0, "0.0"); spr.grid(row=wid, column=9, padx=4, pady=4)
+        lbl_r = tk.Label(self.frame_mid, text="0.00", font=(self.czcionka_nazwa, 9, "bold"), fg=self.tekst_muted, bg=_wiersz_tlo, width=8); lbl_r.grid(row=wid, column=10, padx=4, pady=4, sticky="nsew")
+        
+        for p in [vip, kmob, kkasa, prz, foo, serw, razem, spr]:
+            p.bind("<KeyRelease>", self.weryfikuj_dane)
+            self.przypnij_czyszczenie_zer(p)
+            
+        cb.bind("<<ComboboxSelected>>", lambda e: self.obsluga_typu_pracownika(e, cb, [vip, kmob, kkasa, prz, foo, razem, spr], serw))
+        self.wiersze_danych.append((cb, vip, kmob, kkasa, prz, foo, serw, razem, lbl_g, spr, lbl_r))
+        if domyslny_pracownik: self.obsluga_typu_pracownika(None, cb, [vip, kmob, kkasa, prz, foo, razem, spr], serw)
+
+    def usun_wiersz(self):
+        if len(self.wiersze_danych) > 0:
+            for w in self.wiersze_danych.pop(): w.destroy()
+            self.weryfikuj_dane()
+
+    def wyczysc_formularz(self):
+        while self.wiersze_danych: self.usun_wiersz()
+        for v in [self.fiskal_var, self.raport_karta_mob_var, self.raport_karta_kasa_var, self.faktury_var]: v.set("0.0")
+        self.osoba_var.set(""); self.komentarz_txt.delete("1.0", tk.END)
+        self._odswiez_licznik_komentarza()
+        # Kuchnia i Bar sa stalymi, zbiorczymi wierszami "Raportow Osobowych"
+        # (patrz obsluga_typu_pracownika: Kuchnia ma odblokowane tylko pole
+        # "Serwis", Bar - wszystko oprocz "Serwis") - maja byc zawsze obecne,
+        # wiec odtwarzamy je od razu po kazdym czyszczeniu formularza.
+        self.dodaj_wiersz(self.str_kuchnia)
+        self.dodaj_wiersz(self.str_bar)
+
+    def lista_wykluczonych_napiwki(self):
+        """Wykluczenia z podzialu napiwkow - z dwoch zrodel naraz: lokalna
+        lista tekstowa w Ustawieniach (self.wykluczeni_napiwki) ORAZ flaga
+        "wykluczony_z_napiwkow" ustawiana na stronie (Rozliczenie Dnia ->
+        Wykluczenia z napiwkow, zapisywana w shift_employees i pobierana w
+        odswiez_liste_pracownikow). Kazde z tych dwoch zrodel samo wystarczy,
+        zeby kogos wykluczyc."""
+        lokalni = {n.strip().lower() for n in (self.wykluczeni_napiwki or "").split(",") if n.strip()}
+        return list(lokalni | getattr(self, "pracownicy_wykluczeni_kos", set()))
+
+    def zbierz_godziny_obecnosci_dnia(self, rok, miesiac, dzien):
+        """Zwraca liste (nazwa, sekcja, godziny) pracownikow z bazy KOS dla
+        wskazanego dnia - zasila kalkulator podzialu napiwkow (podziel_serwis,
+        oblicz_napiwki_gotowka). Od Fazy 2 migracji Obecnosci zyja wylacznie w
+        KOS (patrz wczytaj_dzien_obecnosci/zapisz_dzien_obecnosci) - to samo
+        zrodlo trzeba czytac tutaj, zeby kalkulator nie dzielil napiwkow na
+        podstawie pustego/nieaktualnego lokalnego pliku Excel."""
+        try:
+            r, m, d = int(rok), int(miesiac), int(dzien)
+        except (TypeError, ValueError):
+            return []
+        access_token = self._kos_access_token_swiezy()
+        if not access_token:
+            return []
+        status, dane = self._kos_http(
+            "GET",
+            f"{KOS_API_URL}/api/freyonator/obecnosci?rok={r}&miesiac={m}&dzien={d}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if status != 200 or not isinstance(dane, dict):
+            return []
+        wynik = []
+        for p in (dane.get("pracownicy") or []):
+            nazwa = str(p.get("pracownik") or "").strip()
+            if not nazwa:
+                continue
+            sekcja = p.get("sekcja") or "bar"
+            try:
+                godz = float(p.get("godziny"))
+            except (TypeError, ValueError):
+                godz = 0.0
+            if godz > 0:
+                wynik.append((nazwa, sekcja, godz))
+        return wynik
+
+    def podziel_serwis(self):
+        suma = sum(map(self.pobierz_float, [self.calc_1_var.get(), self.calc_2_var.get(), self.calc_3_var.get()]))
+        if suma <= 0:
+            return messagebox.showwarning("Kalkulator", "Wpisz kwotę do podziału (Raport 1/2/3).")
+
+        wykluczeni = self.lista_wykluczonych_napiwki()
+        godziny = [(n, s, g) for n, s, g in self.zbierz_godziny_obecnosci_dnia(self.rok_var.get(), self.miesiac_var.get(), self.dzien_var.get())
+                   if n.lower() not in wykluczeni and str(s).strip().lower() != "admin"]
+        if not godziny:
+            return messagebox.showerror("Kalkulator", "Brak wpisanych godzin w zakładce Obecności dla tego dnia.\nUzupełnij Obecności, żeby podzielić proporcjonalnie.")
+
+        # Zasada ustalona z Jakubem (problem: poprzednio wszyscy - kuchnia,
+        # bar i kelnerzy - byli wrzucani do jednej wspolnej puli godzinowej,
+        # bez podzialu 25/75 i bez wykluczenia baru, mimo ze etykieta w UI
+        # od dawna obiecywala inaczej): Kuchnia dostaje ZAWSZE plaskie 25%
+        # calej puli, niezaleznie od tego, ile osob/godzin tam bylo wpisane
+        # w Obecnosciach tego dnia. "Bar" jest wykluczony z podzialu TYLKO
+        # jako zbiorczy wiersz/kasa "Bar" w Rozliczeniu Dnia (dostaje 0 zl -
+        # patrz wiersze_bar nizej) - to NIE to samo, co sekcja "bar" w
+        # Obecnosciach. W calym systemie (desktop + strona KOS, Grafik
+        # pracy) sekcja pracownika w Obecnosciach ma tylko dwie realne
+        # wartosci, "kuchnia" albo "bar" - nie istnieje osobna wartosc
+        # "kelner" (patrz _auto_sekcja / odswiez_liste_pracownikow). Sekcja
+        # "bar" jest wiec domyslna etykieta dla WSZYSTKICH kelnerow, nie
+        # oznacza osoby pracujacej na kasie barowej do wykluczenia z
+        # napiwkow - wczesniejsza wersja mylnie wykluczala przez to z 75%
+        # puli kompletnie wszystkich kelnerow (bo kazdy z nich ma sekcje
+        # "bar"), co dawalo blad "suma godzin kelnerow... wynosi 0" dla
+        # praktycznie kazdego dnia. Pozostale 75% puli jest dzielone
+        # proporcjonalnie do godzin miedzy wszystkich, ktorych sekcja w
+        # Obecnosciach to NIE "kuchnia" (czyli kelnerow, niezaleznie od
+        # tego, ze ich sekcja jest zapisana jako "bar").
+        kuchnia_suma = round(suma * 0.25, 2)
+        pula_kelnerzy = round(suma - kuchnia_suma, 2)
+
